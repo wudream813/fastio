@@ -1,9 +1,9 @@
 #pragma once
 // ============================================================================
-//  fastio_streambuf.hpp  —  写法 D：基于 std::streambuf 的快读快写（文2 §五）
+//  fastio_streambuf.hpp  —  写法 6：基于 std::streambuf 的快读快写（文2 §五）
 //
-//  100 MiB / 9 位整数实测：读 136 ms（cin 575 ms，约 4.2×）
-//                          写 约 230 ms 级（等同 fwrite 缓冲）
+//  实测：读 148 ms（3.8× cin）、写 154 ms（3.1× cout）
+//  （100 MiB / 998 万个 9 位整数、正负随机；基线 cin 565 ms / cout 473 ms）
 //
 //  思路：绕开 istream/ostream 的格式化层，直接拿 rdbuf() 用
 //        inbuf->sgetn(buf, N) 批量取字节、outbuf->sputn(buf, N) 批量写字节。

@@ -1,29 +1,27 @@
 #pragma once
 // ============================================================================
-//  fastio_mmap.hpp  —  写法 9：mmap 整文件映射 + 双字节打表（文1 §4.2.2）
+//  fastio_mmap_byte.hpp  —  写法 7：mmap 整文件映射 + 单字节解析（文1 §4.2.1）
 //
-//  实测：读 66.5 ms（8.5× cin）
+//  实测：读 107 ms（5.3× cin）
 //  （100 MiB / 998 万个 9 位整数、正负随机；基线 cin 565 ms / cout 473 ms）
 //
-//  思路：
-//    1. mmap 把整份输入一次映射进地址空间，零系统调用往返、零缓冲拷贝；
-//    2. int32_t tbl[65536]：相邻两字节拼成的 uint16 直接索引出这两位数字的值，
-//       非法数字对为 -1，一次吃 2 个字符；
-//    3. 顺序展开 5 次（32 位）/ 10 次（64 位），失配后的步骤必然也失配，不用 break；
-//    4. 映射尾部挂一整页哨兵（0xFF），热循环彻底不判边界。
+//  mmap 的第一步版本：整份输入映射进地址空间后，仍然一个字符一个字符地
+//      while (*p >= '0' && *p <= '9') v = v * 10 + (*p++ ^ 48);
+//  已经省掉了系统调用与缓冲拷贝，但每个字符仍有一次比较 + 一次乘法。
+//  再往上就是双字节打表（见 fastio_mmap.hpp），能再快 1.6 倍。
 //
-//  仅适用于「stdin 是重定向的普通文件」或显式打开文件；
-//  管道 / 终端 / 交互题请用 fastio_fread.hpp 或主库 fastio.hpp。
+//  只适合 stdin 被重定向成普通文件的场景。
 //
 //  用法：
-//      #include "fastio_mmap.hpp"
-//      int n = fio_mmap::in.read<int>();
-//      fio_mmap::in >> a >> b;
+//      #include "fastio_mmap_byte.hpp"
+//      int n = fio_mmap_byte::in.read<int>();
 // ============================================================================
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <type_traits>
 
 #include <fcntl.h>
@@ -31,25 +29,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-namespace fio_mmap {
-
-// ---- 双字节查找表 ----------------------------------------------------------
-struct PairTable {
-    int32_t v[65536];
-    PairTable() {
-        for (int i = 0; i < 65536; ++i) v[i] = -1;
-        for (int a = '0'; a <= '9'; ++a)
-            for (int b = '0'; b <= '9'; ++b)
-                v[a | (b << 8)] = (a ^ 48) * 10 + (b ^ 48);
-    }
-};
-inline const PairTable pair_tbl{};
-
-inline uint16_t load16(const char* p) {
-    uint16_t w;
-    std::memcpy(&w, p, 2);
-    return w;
-}
+namespace fio_mmap_byte {
 
 class Reader {
 public:
@@ -59,10 +39,9 @@ public:
     Reader(const Reader&) = delete;
     Reader& operator=(const Reader&) = delete;
 
-    // 映射一个已打开的普通文件（默认 stdin，必须是重定向来的文件）
     bool attach(FILE* fp) {
         release();
-        int fd = fileno(fp);
+        int fd = fp ? fileno(fp) : -1;
         struct stat st {};
         if (fd < 0 || fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) return false;
         size_t n = size_t(st.st_size);
@@ -84,18 +63,18 @@ public:
         len_ = total;
         p_ = base_;
         end_ = base_ + n;
-        std::memset(base_ + ((n + page - 1) / page) * page, SENT, page);
+        std::memset(base_ + ((n + page - 1) / page) * page, SENT, page);  // 哨兵
         return true;
     }
     bool open(const char* path) {
         FILE* fp = std::fopen(path, "rb");
         if (!fp) return false;
         bool ok = attach(fp);
-        std::fclose(fp);  // mmap 之后 fd 可以关掉
+        std::fclose(fp);
         return ok;
     }
 
-    // ---- 核心：双字节打表解析（只吃局部指针） --------------------------
+    // ---- 单字节解析 ----------------------------------------------------
     template <class T>
     static inline T parse(const char*& q) {
         using U = typename std::make_unsigned<T>::type;
@@ -105,22 +84,12 @@ public:
         if (std::is_signed<T>::value) {
             neg = (c0 == '-');
             q += unsigned(neg) | unsigned(c0 == '+');
+        } else {
+            q += unsigned(c0 == '+');
         }
-        const int32_t* tb = pair_tbl.v;
         U v = 0;
-        int32_t w;
-#define FIO_MMAP_STEP                        \
-    if ((w = tb[load16(q)]) >= 0) {          \
-        v = U(v * 100 + U(w));               \
-        q += 2;                              \
-    }
-        FIO_MMAP_STEP FIO_MMAP_STEP FIO_MMAP_STEP FIO_MMAP_STEP FIO_MMAP_STEP
-        if (sizeof(U) > 4) {
-            FIO_MMAP_STEP FIO_MMAP_STEP FIO_MMAP_STEP FIO_MMAP_STEP FIO_MMAP_STEP
-        }
-#undef FIO_MMAP_STEP
-        if ((unsigned)(*q - '0') < 10u) v = U(v * 10 + U(*q++ ^ 48));
-        const U mask = U(0) - U(neg);   // 无分支取负，INT_MIN 安全
+        while ((unsigned)(*q - '0') < 10u) v = U(v * 10 + U(*q++ ^ 48));
+        const U mask = U(0) - U(neg);
         return T((v ^ mask) - mask);
     }
 
@@ -131,45 +100,62 @@ public:
         p_ = q;
         return v;
     }
-
     template <class T>
-    Reader& operator>>(T& x) {
-        x = read<T>();
+    typename std::enable_if<std::is_integral<T>::value && !std::is_same<T, char>::value,
+                            Reader&>::type
+    read(T& x) { x = read<T>(); return *this; }
+    Reader& read(std::string& s) {
+        while ((unsigned char)*p_ <= ' ') ++p_;
+        const char* q = p_;
+        while (q < end_ && (unsigned char)*q > ' ') ++q;
+        s.assign(p_, size_t(q - p_));
+        p_ = q;
         return *this;
     }
+    template <class A, class B, class... R>
+    Reader& read(A& a, B& b, R&... r) { read(a); return read(b, r...); }
     template <class T>
-    Reader& read_n(T* a, size_t n) {  // 批量：游标常驻寄存器，最快
+    Reader& read_n(T* a, size_t n) {
         const char* q = p_;
         for (size_t i = 0; i < n; ++i) a[i] = parse<T>(q);
         p_ = q;
         return *this;
     }
-
+    template <class T>
+    Reader& operator>>(T& x) { return read(x); }
     bool eof() {
         while ((unsigned char)*p_ <= ' ') ++p_;
         return p_ >= end_;
     }
-    const char* pos() const { return p_; }
-    const char* end() const { return end_; }
 
     void release() {
         if (base_) { munmap(base_, len_); base_ = nullptr; len_ = 0; }
-        p_ = end_ = nullptr;
+        p_ = end_ = sentinel();
     }
 
 private:
     static constexpr char SENT = char(0xFF);
-    const char* p_ = nullptr;
-    const char* end_ = nullptr;
+    static const char* sentinel() {
+        static const char z[64] = {SENT, SENT, SENT, SENT, SENT, SENT, SENT, SENT,
+                                   SENT, SENT, SENT, SENT, SENT, SENT, SENT, SENT,
+                                   SENT, SENT, SENT, SENT, SENT, SENT, SENT, SENT,
+                                   SENT, SENT, SENT, SENT, SENT, SENT, SENT, SENT,
+                                   SENT, SENT, SENT, SENT, SENT, SENT, SENT, SENT,
+                                   SENT, SENT, SENT, SENT, SENT, SENT, SENT, SENT,
+                                   SENT, SENT, SENT, SENT, SENT, SENT, SENT, SENT,
+                                   SENT, SENT, SENT, SENT, SENT, SENT, SENT, SENT};
+        return z;
+    }
+    const char* p_ = sentinel();
+    const char* end_ = sentinel();
     char* base_ = nullptr;
     size_t len_ = 0;
 };
 
-// 默认对象：映射 stdin（必须是 ./a.out < input.txt 这种重定向）
 struct StdinReader : Reader {
     StdinReader() { ok = attach(stdin); }
     bool ok = false;
 };
 inline StdinReader in;
 
-}  // namespace fio_mmap
+}  // namespace fio_mmap_byte

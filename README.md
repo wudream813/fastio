@@ -76,46 +76,69 @@ fastio::FastIO fio(stdin, stdout);          // 读写合体对象，也可 fio.b
 
 ---
 
-## 3. 四种写法，四个独立头文件
+## 3. 每种写法一个独立头文件
 
-除了「自动选最快档」的主库 `fastio.hpp`，每种写法也各自封装成一个**可单独使用**的头文件，
-互不依赖、命名空间独立，可以同时 include 做对照：
+文章里出现过的**每一档写法都单独成库**，互不依赖、命名空间独立，可以同时 include 做对照。
+接口刻意保持一致：读 `read<T>()` / `>>` / `read(a,b,c)` / `read_n(arr,n)` / `eof()`，
+写 `write(x)` / `<<` / `write_n(arr,n)` / `put(c)` / `flush()`，**换一行 include 就换实现**。
 
-| 头文件 | 写法 | 核心 | 100 MiB 读 | 100 MiB 写 | 适用 |
-|---|---|---|---:|---:|---|
-| [`fastio_mmap.hpp`](include/fastio_mmap.hpp) | A · mmap + 双字节打表 | 文1 §4.2.2 的极简手写循环 | **69.7 ms（8.2×）** | — | 输入是重定向文件、卡常题 |
-| [`fastio_ultra.hpp`](include/fastio_ultra.hpp) | B · UltraReader | 同样 mmap+打表，补齐管道回退/字符串/整行/批量 | **70.7 ms（8.1×）** | — | 想要 A 的速度 + 好用的接口 |
-| [`fastio_fread.hpp`](include/fastio_fread.hpp) | C · fread / fwrite | 1 MiB 读缓冲；4 MiB 写缓冲 + 四位打表 | 147.2 ms（3.9×） | **172.4 ms（2.7×）** | 最通用：管道、终端、Windows |
-| [`fastio_streambuf.hpp`](include/fastio_streambuf.hpp) | D · streambuf | `sgetn` / `sputn` 直接操作 `rdbuf()` | 142.7 ms（4.0×） | **164.4 ms（2.8×）** | 纯 STL，不用 mmap/stdio |
-| [`fastio.hpp`](include/fastio.hpp) | 主库 | 文件→mmap+打表，管道/终端→流式；写 fwrite+四位打表 | 74.5 ms（7.7×） | 168.0 ms（2.8×） | 默认就用这个 |
+| # | 写法 | 头文件 | 命名空间 | 100 MiB 读 | 100 MiB 写 |
+|---|---|---|---|---:|---:|
+| — | 基线 `std::cin` / `std::cout` | — | — | 565 ms | 473 ms |
+| 1 | cin/cout 关同步 + untie | `fastio_cin.hpp` | `fio_cin` | 578 ms（0.98×） | 451 ms（1.05×） |
+| 2 | scanf / printf | `fastio_scanf.hpp` | `fio_scanf` | 746 ms（0.76×） | 560 ms（0.85×） |
+| 3 | getchar / putchar 手写整型 | `fastio_getchar.hpp` | `fio_getchar` | 432 ms（1.3×） | 442 ms（1.07×） |
+| 4 | getchar_unlocked / putchar_unlocked | `fastio_getchar_unlocked.hpp` | `fio_gcu` | 302 ms（1.9×） | 302 ms（1.6×） |
+| 5 | fread 缓冲 / fwrite + 四位打表 | `fastio_fread.hpp` | `fio_fread` | 143 ms（3.9×） | **148 ms（3.2×）** |
+| 6 | streambuf `sgetn` / `sputn` | `fastio_streambuf.hpp` | `fio_sbuf` | 148 ms（3.8×） | 154 ms（3.1×） |
+| 7 | mmap 单字节 | `fastio_mmap_byte.hpp` | `fio_mmap_byte` | 107 ms（5.3×） | — |
+| 8 | fwrite 缓冲（不打表） | `fastio_fwrite.hpp` | `fio_fwrite` | — | 251 ms（1.9×） |
+| 9 | **mmap + 双字节打表** | `fastio_mmap.hpp` | `fio_mmap` | **66.5 ms（8.5×）** | — |
+| 10 | **UltraReader**（9 + 管道回退/字符串/整行/批量） | `fastio_ultra.hpp` | `fio_ultra` | **66.5 ms（8.5×）** | — |
+| ★ | 主库（自动选档，读写齐全） | `fastio.hpp` | `fastio` | 70.7 ms（8.0×） | 155 ms（3.05×） |
+| — | 一次性引入全部写法 | `fastio_all.hpp` | — | — | — |
 
-（同机同数据，`std::cin` 573.8 ms / `std::cout` 463.8 ms 作基线，正负号随机；复现 `make benchvar`）
+同机同数据：998 万个 9 位整数、正负随机，3 轮取中位数。复现：`make benchvar`。
 
-各自的最小用法：
+各自的最小用法（都自带绑定 stdin/stdout 的全局对象 `in` / `out`）：
 
 ```cpp
-#include "fastio_mmap.hpp"        // A
-int n = fio_mmap::in.read<int>();          // in 已绑定 stdin（须重定向文件）
-fio_mmap::Reader r; r.open("in.txt");      // 或自己开文件
+#include "fastio_cin.hpp"              // 1
+int n = fio_cin::in.read<int>();       fio_cin::out << n << '\n';
 
-#include "fastio_ultra.hpp"       // B
-int n = fio_ultra::in.read<int>();
-fio_ultra::in.read_n(a, n);                // 批量最快
-std::string s; fio_ultra::in >> s;
+#include "fastio_scanf.hpp"            // 2
+int n = fio_scanf::in.read<int>();     fio_scanf::out << n << '\n';
 
-#include "fastio_fread.hpp"       // C
-int n = fio_fread::in.read<int>();
-fio_fread::out << n << '\n';               // 析构自动 flush
+#include "fastio_getchar.hpp"          // 3
+int n = fio_getchar::in.read<int>();   fio_getchar::out << n << '\n';
 
-#include "fastio_streambuf.hpp"   // D
-int n = fio_sbuf::in.read<int>();
-fio_sbuf::out << n << '\n';
+#include "fastio_getchar_unlocked.hpp" // 4（单线程专用）
+int n = fio_gcu::in.read<int>();       fio_gcu::out << n << '\n';
+
+#include "fastio_fread.hpp"            // 5（最通用：管道/终端/Windows 都行）
+int n = fio_fread::in.read<int>();     fio_fread::out << n << '\n';
+
+#include "fastio_streambuf.hpp"        // 6（纯 STL）
+int n = fio_sbuf::in.read<int>();      fio_sbuf::out << n << '\n';
+
+#include "fastio_mmap_byte.hpp"        // 7
+int n = fio_mmap_byte::in.read<int>();
+
+#include "fastio_fwrite.hpp"           // 8
+fio_fwrite::out << x << '\n';
+
+#include "fastio_mmap.hpp"             // 9（读最快，须重定向文件）
+int n = fio_mmap::in.read<int>();
+
+#include "fastio_ultra.hpp"            // 10（读最快 + 接口最全）
+int n = fio_ultra::in.read<int>();     fio_ultra::in.read_n(a, n);
+
+#include "fastio_all.hpp"              // 全都要（对照实验用）
 ```
 
-四者接口刻意保持一致（`read<T>()` / `>>` / `read_n` / `eof()`，写侧 `<<` / `write_n` / `flush`），
-换一行 include 就能换实现，方便你在自己机器上做对照实验。
-自检：`make test` 会跑 `variants_test`，四种读法在 20 万随机数上逐个交叉比对，
-并覆盖 `0` / `INT_MIN` / `LLONG_MIN` / `ULLONG_MAX` / `+` 前缀。
+自检：`make test` 里的 `variants_test` 会逐个验证 11 种读法 / 8 种写法，
+覆盖 `0` / `INT_MIN` / `LLONG_MIN` / `ULLONG_MAX` / `+` 前缀 / 管道输入，
+并让四种主力读法在 20 万随机数上交叉比对。
 
 ---
 
@@ -202,16 +225,23 @@ fio_sbuf::out << n << '\n';
 ```
 fastio/
 ├── include/
-│   ├── fastio.hpp             ← 主库（自动选最快档，唯一需要的文件）
-│   ├── fastio_mmap.hpp        ← A · mmap + 双字节打表
-│   ├── fastio_ultra.hpp       ← B · UltraReader
-│   ├── fastio_fread.hpp       ← C · fread / fwrite + 四位打表
-│   └── fastio_streambuf.hpp   ← D · streambuf sgetn / sputn
+│   ├── fastio.hpp                  ← ★ 主库（自动选最快档，平时只要这个）
+│   ├── fastio_all.hpp              ← 一次性引入全部写法
+│   ├── fastio_cin.hpp              ← 1 · cin/cout 关同步
+│   ├── fastio_scanf.hpp            ← 2 · scanf/printf
+│   ├── fastio_getchar.hpp          ← 3 · getchar/putchar
+│   ├── fastio_getchar_unlocked.hpp ← 4 · *_unlocked
+│   ├── fastio_fread.hpp            ← 5 · fread / fwrite+四位打表
+│   ├── fastio_streambuf.hpp        ← 6 · streambuf sgetn/sputn
+│   ├── fastio_mmap_byte.hpp        ← 7 · mmap 单字节
+│   ├── fastio_fwrite.hpp           ← 8 · fwrite 缓冲（不打表）
+│   ├── fastio_mmap.hpp             ← 9 · mmap + 双字节打表
+│   └── fastio_ultra.hpp            ← 10 · UltraReader
 ├── src/example.cpp        ← 最小示例（读 n 个数求和）
 ├── src/demo.cpp           ← 全接口演示
 ├── src/correctness.cpp    ← 主库正确性自检（mmap/流式/边界/往返 20 万随机数）
-├── src/variants_test.cpp  ← 四种独立写法交叉自检
-├── src/variants_bench.cpp ← 四种独立写法横向对比
+├── src/variants_test.cpp  ← 全部独立写法自检 + 交叉比对
+├── src/variants_bench.cpp ← 全部独立写法横向对比
 ├── src/bench_lib.cpp      ← 主库 vs cin/cout（100 MiB）
 ├── src/benchmark.cpp      ← 11 档读 + 8 档写全对照，出 HTML 报告
 ├── Makefile               ← make test / make benchlib / make bench
@@ -219,8 +249,8 @@ fastio/
 ```
 
 ```bash
-make test        # 正确性（主库 + 四种写法交叉比对）
+make test        # 正确性（主库 + 全部写法自检）
 make benchlib    # 100MiB 主库 vs 标准流
-make benchvar    # 100MiB 四种写法横向对比
+make benchvar    # 100MiB 全部写法横向对比
 make bench       # 全档位对照 + HTML 报告
 ```

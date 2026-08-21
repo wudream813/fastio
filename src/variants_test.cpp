@@ -1,4 +1,6 @@
-// 四种独立写法的正确性自检：mmap打表 / UltraReader / fread / streambuf
+// 全部独立写法的正确性自检：
+//   cin / scanf / getchar / getchar_unlocked / fread / streambuf /
+//   mmap单字节 / mmap+双字节打表 / UltraReader / fwrite / 主库
 //   g++ -O2 -std=c++17 -Iinclude -o variants_test src/variants_test.cpp
 #include <cassert>
 #include <climits>
@@ -8,10 +10,7 @@
 #include <string>
 #include <vector>
 
-#include "../include/fastio_fread.hpp"
-#include "../include/fastio_mmap.hpp"
-#include "../include/fastio_streambuf.hpp"
-#include "../include/fastio_ultra.hpp"
+#include "../include/fastio_all.hpp"
 
 static const char* IN = "/tmp/fastio_var.in";
 
@@ -65,52 +64,118 @@ static void check_write(W& w, const char* tag, const char* path) {
 int main() {
     write_text(IN, TEXT);
 
-    {   // A: mmap + 双字节打表
+    {   // 9: mmap + 双字节打表
         fio_mmap::Reader r;
         assert(r.open(IN));
-        check_read(r, "A mmap+双字节打表");
+        check_read(r, "9 mmap+双字节打表");
     }
-    {   // B: UltraReader（文件 -> mmap）
+    {   // 10: UltraReader（文件 -> mmap）
         fio_ultra::UltraReader r;
         assert(r.load_file(IN));
         assert(r.mode() == fio_ultra::UltraReader::MAPPED);
-        check_read(r, "B UltraReader/mmap");
+        check_read(r, "10 UltraReader/mmap");
     }
-    {   // B: UltraReader（管道 -> 整读回退）
+    {   // 10: UltraReader（管道 -> 整读回退）
         FILE* pp = popen("cat /tmp/fastio_var.in", "r");
         fio_ultra::UltraReader r(pp);
         assert(r.mode() == fio_ultra::UltraReader::SLURPED);
-        check_read(r, "B UltraReader/管道");
+        check_read(r, "10 UltraReader/管道");
         pclose(pp);
     }
-    {   // C: fread
+    {   // 5: fread
         fio_fread::Reader r;
         assert(r.open(IN));
-        check_read(r, "C fread");
+        check_read(r, "5 fread");
     }
-    {   // C: fread 走管道
+    {   // 5: fread 走管道
         FILE* pp = popen("cat /tmp/fastio_var.in", "r");
         fio_fread::Reader r(pp);
-        check_read(r, "C fread/管道");
+        check_read(r, "5 fread/管道");
         pclose(pp);
     }
-    {   // D: streambuf
+    {   // 6: streambuf
         std::ifstream fin(IN, std::ios::binary);
         fio_sbuf::Reader r(fin.rdbuf());
-        check_read(r, "D streambuf");
+        check_read(r, "6 streambuf");
+    }
+    {   // 1: cin 关同步
+        std::ifstream fin(IN);
+        fio_cin::Reader r(fin);
+        check_read(r, "1 cin 关同步");
+    }
+    {   // 2: scanf
+        fio_scanf::Reader r;
+        assert(r.open(IN));
+        check_read(r, "2 scanf");
+    }
+    {   // 3: getchar
+        fio_getchar::Reader r;
+        assert(r.open(IN));
+        check_read(r, "3 getchar");
+    }
+    {   // 4: getchar_unlocked
+        fio_gcu::Reader r;
+        assert(r.open(IN));
+        check_read(r, "4 getchar_unlocked");
+    }
+    {   // 7: mmap 单字节
+        fio_mmap_byte::Reader r;
+        assert(r.open(IN));
+        check_read(r, "7 mmap 单字节");
+    }
+    {   // 主库
+        fastio::Reader r;
+        assert(r.open(IN));
+        check_read(r, "★ 主库 fastio.hpp");
     }
 
-    {   // 写：C fread + 四位打表
+    {   // 写：5 fread + 四位打表
         const char* out = "/tmp/fastio_var_c.out";
         fio_fread::Writer w;
         assert(w.open(out));
-        check_write(w, "C fwrite+四位打表", out);
+        check_write(w, "5 fwrite+四位打表", out);
     }
-    {   // 写：D streambuf
+    {   // 写：6 streambuf
         const char* out = "/tmp/fastio_var_d.out";
         std::ofstream fout(out, std::ios::binary);
         fio_sbuf::Writer w(fout.rdbuf());
-        check_write(w, "D streambuf+四位打表", out);
+        check_write(w, "6 streambuf+四位打表", out);
+    }
+    {   // 写：2 printf
+        const char* out = "/tmp/fastio_var_2.out";
+        fio_scanf::Writer w;
+        assert(w.open(out));
+        check_write(w, "2 printf", out);
+    }
+    {   // 写：3 putchar
+        const char* out = "/tmp/fastio_var_3.out";
+        fio_getchar::Writer w;
+        assert(w.open(out));
+        check_write(w, "3 putchar", out);
+    }
+    {   // 写：4 putchar_unlocked
+        const char* out = "/tmp/fastio_var_4.out";
+        fio_gcu::Writer w;
+        assert(w.open(out));
+        check_write(w, "4 putchar_unlocked", out);
+    }
+    {   // 写：8 fwrite 缓冲（不打表）
+        const char* out = "/tmp/fastio_var_8.out";
+        fio_fwrite::Writer w;
+        assert(w.open(out));
+        check_write(w, "8 fwrite 缓冲", out);
+    }
+    {   // 写：1 cout 关同步
+        const char* out = "/tmp/fastio_var_1.out";
+        std::ofstream fo(out);
+        fio_cin::Writer w(fo);
+        check_write(w, "1 cout 关同步", out);
+    }
+    {   // 写：★ 主库
+        const char* out = "/tmp/fastio_var_m.out";
+        fastio::Writer w;
+        assert(w.open(out));
+        check_write(w, "★ 主库 fastio.hpp", out);
     }
 
     {   // 大批量往返：20 万随机数，四种读法结果必须一致
@@ -139,9 +204,9 @@ int main() {
             assert(rc.read<long long>() == x);
             assert(rd.read<long long>() == x);
         }
-        std::printf("  cross-check 200k × 4 写法 OK\n");
+        std::printf("  cross-check 200k × 4 主力读法 OK\n");
     }
 
-    std::printf("variants: OK\n");
+    std::printf("variants: ALL OK\n");
     return 0;
 }
