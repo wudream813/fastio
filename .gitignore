@@ -1,0 +1,17 @@
+# 编译产物
+example
+demo
+correctness
+benchmark
+bench_lib
+variants_test
+variants_bench
+*.o
+*.out
+*.exe
+a.out
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store

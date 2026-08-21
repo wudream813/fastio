@@ -1,0 +1,16 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build & test
+        run: |
+          g++ --version
+          make test
+      - name: Quick benchmark (8 MiB)
+        run: |
+          make bench_lib variants_bench
+          ./bench_lib 8
+          ./variants_bench 8
