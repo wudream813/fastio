@@ -24,11 +24,20 @@
 //      io.readln(line);                io.flush();   // 交互题每轮必须
 //
 //  编译：g++ -O2 -std=c++17 main.cpp
-//  可选宏：
+//  可选宏（模式类）：
 //      FASTIO_NO_MMAP      禁用 mmap（强制 fread）
 //      FASTIO_STREAM       强制流式读（交互题；不把整份输入读进内存）
 //      FASTIO_OBUF_BITS    输出缓冲大小位数，默认 22（4 MiB）
 //      FASTIO_IBUF_BITS    流式输入缓冲位数，默认 20（1 MiB）
+//
+//  减分支选项（#define 之后再 #include；「你保证」成立才开，否则结果错误）：
+//      FASTIO_NO_EOF_CHECK     忽略 EOF：getch/peek/read 不再判边界，流式下不再
+//                              refill —— 数据必须完整规范（mmap/整读文件才安全）
+//      FASTIO_ASSUME_UNSIGNED  保证输入没有负号：读、写两侧的符号分支整体消失
+//      FASTIO_PAIR_STEPS_INT   int 级固定跑几个双字节步，默认 5（10 位数字足够）
+//      FASTIO_PAIR_STEPS_LL    long long 级，默认 10；数据位数小可以调小提速
+//      FASTIO_REPLACE_CIN_COUT 定义全局 cin/cout/endl，直接替换 iostream 写法：
+//                                  int a; cin >> a; cout << a << endl;
 // ============================================================================
 
 #include <cstdarg>
@@ -61,6 +70,18 @@
 #endif
 #ifndef FASTIO_IBUF_BITS
   #define FASTIO_IBUF_BITS 20
+#endif
+// 双字节打表的展开步数：int 最长 10 位 = 5 个双字符，ll 最长 20 位 = 10 个。
+// 知道数据位数小（如坐标 ≤ 6 位）可以调小，少几次失败的查表。
+#ifndef FASTIO_PAIR_STEPS_INT
+  #define FASTIO_PAIR_STEPS_INT 5
+#endif
+#ifndef FASTIO_PAIR_STEPS_LL
+  #define FASTIO_PAIR_STEPS_LL 10
+#endif
+#if FASTIO_PAIR_STEPS_INT < 0 || FASTIO_PAIR_STEPS_INT > 10 || \
+    FASTIO_PAIR_STEPS_LL < 0 || FASTIO_PAIR_STEPS_LL > 10
+  #error "FASTIO_PAIR_STEPS_* 取值范围 0..10"
 #endif
 
 #if defined(__GNUC__)
@@ -188,11 +209,15 @@ public:
 
     // ---- 字符级 ------------------------------------------------------
     FASTIO_ALWAYS int getch() {  // 原样取一个字节，无则 EOF
+#ifndef FASTIO_NO_EOF_CHECK
         if (FASTIO_UNLIKELY(p_ >= end_) && !fill()) return EOF;
+#endif
         return (unsigned char)*p_++;
     }
     FASTIO_ALWAYS int peek() {
+#ifndef FASTIO_NO_EOF_CHECK
         if (FASTIO_UNLIKELY(p_ >= end_) && !fill()) return EOF;
+#endif
         return (unsigned char)*p_;
     }
     FASTIO_ALWAYS void skip_ws() {
@@ -209,6 +234,9 @@ public:
     FASTIO_ALWAYS static T parse_int(const char*& q) {
         using U = typename std::make_unsigned<T>::type;
         while ((unsigned char)*q <= ' ') ++q;
+#ifdef FASTIO_ASSUME_UNSIGNED
+        constexpr bool neg = false;   // 用户承诺无负号：符号分支编译期消失
+#else
         // 符号位无分支处理：负号在随机数据上分支预测失败率极高
         unsigned c0 = (unsigned char)*q;
         bool neg = false;
@@ -218,6 +246,7 @@ public:
         } else {
             q += unsigned(c0 == '+');
         }
+#endif
         const int32_t* tb = detail::pair_tbl.v;
         U v = 0;
         int32_t w;
@@ -227,18 +256,50 @@ public:
         v = U(v * 100 + U(w));                             \
         q += 2;                                            \
     }
-        FASTIO_STEP FASTIO_STEP FASTIO_STEP FASTIO_STEP FASTIO_STEP
-        if constexpr (sizeof(U) > 4) { FASTIO_STEP FASTIO_STEP FASTIO_STEP FASTIO_STEP FASTIO_STEP }
+// 预处理器层重复：0..10 步，展开数由 FASTIO_PAIR_STEPS_INT / _LL 决定
+#define FASTIO_STEPS_0
+#define FASTIO_STEPS_1  FASTIO_STEP
+#define FASTIO_STEPS_2  FASTIO_STEPS_1 FASTIO_STEP
+#define FASTIO_STEPS_3  FASTIO_STEPS_2 FASTIO_STEP
+#define FASTIO_STEPS_4  FASTIO_STEPS_3 FASTIO_STEP
+#define FASTIO_STEPS_5  FASTIO_STEPS_4 FASTIO_STEP
+#define FASTIO_STEPS_6  FASTIO_STEPS_5 FASTIO_STEP
+#define FASTIO_STEPS_7  FASTIO_STEPS_6 FASTIO_STEP
+#define FASTIO_STEPS_8  FASTIO_STEPS_7 FASTIO_STEP
+#define FASTIO_STEPS_9  FASTIO_STEPS_8 FASTIO_STEP
+#define FASTIO_STEPS_10 FASTIO_STEPS_9 FASTIO_STEP
+#define FASTIO_PASTE_(a, b) a##b
+#define FASTIO_PASTE(a, b) FASTIO_PASTE_(a, b)
+        if constexpr (sizeof(U) > 4) {
+            FASTIO_PASTE(FASTIO_STEPS_, FASTIO_PAIR_STEPS_LL)   // 64 位默认 10 步
+        } else {
+            FASTIO_PASTE(FASTIO_STEPS_, FASTIO_PAIR_STEPS_INT)  // 32 位默认 5 步
+        }
+#undef FASTIO_PASTE
+#undef FASTIO_PASTE_
+#undef FASTIO_STEPS_0
+#undef FASTIO_STEPS_1
+#undef FASTIO_STEPS_2
+#undef FASTIO_STEPS_3
+#undef FASTIO_STEPS_4
+#undef FASTIO_STEPS_5
+#undef FASTIO_STEPS_6
+#undef FASTIO_STEPS_7
+#undef FASTIO_STEPS_8
+#undef FASTIO_STEPS_9
+#undef FASTIO_STEPS_10
 #undef FASTIO_STEP
         if ((unsigned)(*q - '0') < 10u) v = U(v * 10 + U(*q++ ^ 48));
-        const U mask = U(0) - U(neg);           // 无分支取负
+        const U mask = U(0) - U(neg);           // 无分支取负（ASSUME_UNSIGNED 下恒 0）
         v = U((v ^ mask) - mask);               // INT_MIN / LLONG_MIN 安全
         return T(v);
     }
 
     template <class T>
     FASTIO_HOT typename std::enable_if<detail::is_int<T>::value, T>::type read() {
+#ifndef FASTIO_NO_EOF_CHECK
         if (FASTIO_UNLIKELY(stream_)) { skip_ws(); ensure(48); }
+#endif
         const char* q = p_;
         T v = parse_int<T>(q);
         p_ = q;
@@ -260,7 +321,11 @@ public:
     template <class T>
     typename std::enable_if<std::is_same<T, char>::value, T>::type read() {
         skip_ws();
+#ifdef FASTIO_NO_EOF_CHECK
+        return *p_++;
+#else
         return p_ >= end_ ? '\0' : *p_++;
+#endif
     }
     template <class T>
     typename std::enable_if<std::is_same<T, std::string>::value, T>::type read() {
@@ -563,6 +628,9 @@ public:
     template <class T>
     typename std::enable_if<detail::is_int<T>::value, void>::type write(T x) {
         using U = typename std::make_unsigned<T>::type;
+#ifdef FASTIO_ASSUME_UNSIGNED
+        write_uns(U(x));  // 用户保证没有负数：符号分支编译期消失
+#else
         if constexpr (std::is_signed<T>::value) {
             if (x < 0) {
                 put('-');
@@ -571,6 +639,7 @@ public:
             }
         }
         write_uns(U(x));
+#endif
     }
 
     void write(char c) { put(c); }
@@ -674,3 +743,23 @@ using UltraReader = Reader;
 }  // namespace fastio
 
 using fastio::io;
+
+// ============================================================================
+//  选项：FASTIO_REPLACE_CIN_COUT —— 全局 cin / cout / endl 顶替 iostream
+//
+//      #define FASTIO_REPLACE_CIN_COUT
+//      #include "fastio.hpp"
+//      int main() { int a, b; cin >> a >> b; cout << a + b << endl; }
+//
+//  · cin/cout 本质都是 fastio::io：>> 走 mmap 快读、<< 走四位打表快写，
+//    endl 就是 '\n'；程序结束自动 flush；
+//  · 全局声明的 cin/cout 会盖住 using namespace std 引入的 std::cin，
+//    所以就算模板里带着 <bits/stdc++.h>，写 cin/cout 也自动变成快读；
+//  · 没有 cin.tie() / setw / fixed 这类 iostream 花活，要格式化请 printf；
+//  · std::endl 是函数指针传不进来，用我们自己的 endl（或 '\n'）。
+// ============================================================================
+#ifdef FASTIO_REPLACE_CIN_COUT
+inline fastio::FastIO& cin = fastio::io;
+inline fastio::FastIO& cout = fastio::io;
+inline constexpr char endl = '\n';
+#endif

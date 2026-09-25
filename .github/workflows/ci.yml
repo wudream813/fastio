@@ -11,6 +11,8 @@ jobs:
           make test
       - name: Quick benchmark (8 MiB)
         run: |
-          make bench_lib variants_bench
+          make bench_lib variants_bench options_bench options_bench_fast
           ./bench_lib 8
           ./variants_bench 8
+          ./options_bench 8
+          ./options_bench_fast 8

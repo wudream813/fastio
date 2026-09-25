@@ -15,6 +15,9 @@
 //  用法：
 //      #include "fastio_mmap_byte.hpp"
 //      int n = fio_mmap_byte::in.read<int>();
+//
+//  减分支选项（#define 后再 include）：
+//      FASTIO_ASSUME_UNSIGNED  保证没有负号：跳过符号处理
 // ============================================================================
 
 #include <cstddef>
@@ -79,6 +82,9 @@ public:
     static inline T parse(const char*& q) {
         using U = typename std::make_unsigned<T>::type;
         while ((unsigned char)*q <= ' ') ++q;
+#ifdef FASTIO_ASSUME_UNSIGNED
+        constexpr bool neg = false;   // 用户承诺无负号：符号分支编译期消失
+#else
         unsigned c0 = (unsigned char)*q;
         bool neg = false;
         if (std::is_signed<T>::value) {
@@ -87,6 +93,7 @@ public:
         } else {
             q += unsigned(c0 == '+');
         }
+#endif
         U v = 0;
         while ((unsigned)(*q - '0') < 10u) v = U(v * 10 + U(*q++ ^ 48));
         const U mask = U(0) - U(neg);

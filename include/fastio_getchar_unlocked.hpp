@@ -16,6 +16,10 @@
 //      #include "fastio_getchar_unlocked.hpp"
 //      int n = fio_gcu::in.read<int>();
 //      fio_gcu::out << n << '\n';
+//
+//  减分支选项（#define 后再 include）：
+//      FASTIO_NO_EOF_CHECK     忽略 EOF：跳过空白/回退处不再判 EOF（数据必须规范）
+//      FASTIO_ASSUME_UNSIGNED  保证没有负号：读、写两侧的符号分支整体消失
 // ============================================================================
 
 #include <cstddef>
@@ -56,13 +60,25 @@ public:
     T read() {
         using U = typename std::make_unsigned<T>::type;
         int c = gc();
+#ifdef FASTIO_NO_EOF_CHECK
+        while (c <= ' ') c = gc();        // 忽略 EOF：空白循环不判 EOF
+#else
         while (c != EOF && c <= ' ') c = gc();
+#endif
+#ifdef FASTIO_ASSUME_UNSIGNED
+        constexpr bool neg = false;       // 用户承诺无负号：符号分支编译期消失
+#else
         bool neg = false;
         if (c == '-') { neg = true; c = gc(); }
         else if (c == '+') { c = gc(); }
+#endif
         U v = 0;
         while ((unsigned)(c - '0') < 10u) { v = U(v * 10 + U(c ^ 48)); c = gc(); }
+#ifdef FASTIO_NO_EOF_CHECK
+        std::ungetc(c, fp_);              // 承诺读不到 EOF：直接回退非数字字符
+#else
         if (c != EOF) std::ungetc(c, fp_);
+#endif
         const U mask = U(0) - U(neg && std::is_signed<T>::value);
         return T((v ^ mask) - mask);
     }
@@ -129,8 +145,12 @@ public:
     write(T x) {
         using U = typename std::make_unsigned<T>::type;
         U v;
+#ifdef FASTIO_ASSUME_UNSIGNED
+        v = U(x);  // 用户保证没有负数：符号分支编译期消失
+#else
         if (std::is_signed<T>::value && x < 0) { put('-'); v = U(U(0) - U(x)); }
         else v = U(x);
+#endif
         char buf[24];
         int k = 0;
         do { buf[k++] = char('0' + int(v % 10)); v /= 10; } while (v);

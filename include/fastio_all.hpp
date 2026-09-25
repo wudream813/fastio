@@ -22,6 +22,13 @@
 //  基线：std::cin 565 ms / std::cout 473 ms（同机同数据，998 万个 9 位整数，正负随机）
 //
 //  平时直接用主库 `io` 就行；这个聚合头主要给对照实验用（make benchvar）。
+//
+//  减分支选项（#define 后再 include，对下面包含的所有手写解析层生效）：
+//      FASTIO_NO_EOF_CHECK     忽略 EOF：fread/streambuf/getchar/主库 不再判 EOF
+//      FASTIO_ASSUME_UNSIGNED  保证没有负号：读、写两侧的符号分支整体消失
+//      FASTIO_PAIR_STEPS_INT   int 级双字节步数，默认 5（mmap/ultra/主库）
+//      FASTIO_PAIR_STEPS_LL    long long 级，默认 10
+//      FASTIO_REPLACE_CIN_COUT （仅主库）全局 cin/cout/endl 顶替 iostream
 // ============================================================================
 
 #include "fastio.hpp"

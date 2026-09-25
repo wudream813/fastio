@@ -74,6 +74,9 @@ fastio::FastIO fio(stdin, stdout);          // 读写合体对象，也可 fio.b
 | `FASTIO_OBUF_BITS` | 输出缓冲位数，默认 22（4 MiB） |
 | `FASTIO_IBUF_BITS` | 流式输入缓冲位数，默认 20（1 MiB） |
 
+减分支 / 顶替 iostream 的选项（`FASTIO_NO_EOF_CHECK`、`FASTIO_ASSUME_UNSIGNED`、
+`FASTIO_PAIR_STEPS_INT/_LL`、`FASTIO_REPLACE_CIN_COUT`）见下面 **§4 编译期选项**。
+
 ---
 
 ## 3. 每种写法一个独立头文件
@@ -138,11 +141,71 @@ int n = fio_ultra::in.read<int>();     fio_ultra::in.read_n(a, n);
 
 自检：`make test` 里的 `variants_test` 会逐个验证 11 种读法 / 8 种写法，
 覆盖 `0` / `INT_MIN` / `LLONG_MIN` / `ULLONG_MAX` / `+` 前缀 / 管道输入，
-并让四种主力读法在 20 万随机数上交叉比对。
+并让四种主力读法在 20 万随机数上交叉比对；
+`options_test` 再用 6 组编译期选项组合，把 8 个手写解析层 + 6 个 Writer 全量互验。
 
 ---
 
-## 4. 性能（本机实测）
+## 4. 编译期选项（#define 后再 #include）
+
+**⚠️ 每个选项都是你对数据的一份承诺；承诺不成立 = 结果错误。**
+同一个 `#define` 对后面包含的所有手写解析层（主库 + 各独立头）同时生效。
+
+| 宏 | 你的承诺 | 被删掉的分支 | 作用于 |
+|---|---|---|---|
+| `FASTIO_NO_EOF_CHECK` | 数据完整规范、热路径读不到 EOF | `getch/peek/read` 的边界判断、流式 refill | 主库、fread、streambuf、getchar(±unlocked) |
+| `FASTIO_ASSUME_UNSIGNED` | 输入没有负号（也没有 `+`） | 读侧符号判断、写侧 `x < 0` 判断 | **全部**手写解析层 |
+| `FASTIO_PAIR_STEPS_INT=n` | `int` 最多 `2n+1` 位十进制（默认 5） | 多余的双字节查表展开 | 主库、mmap、ultra |
+| `FASTIO_PAIR_STEPS_LL=n` | `long long` 同上（默认 10） | 同上 | 同上 |
+| `FASTIO_REPLACE_CIN_COUT` | — | 全局 `cin/cout/endl` 顶替 iostream | 主库 |
+
+> mmap / ultra / mmap_byte 三个头靠尾部哨兵本来就零 EOF 判断，
+> `FASTIO_NO_EOF_CHECK` 对它们没有可删的分支，为统一开关清单仍接受该宏。
+
+### 例：竞赛数据（保证非负、读的是完整文件）
+
+```cpp
+#define FASTIO_ASSUME_UNSIGNED     // 没有负号（也没有 + 前缀）
+#define FASTIO_NO_EOF_CHECK        // 输入是完整文件，不触 EOF
+#define FASTIO_PAIR_STEPS_INT 3    // 知道数字 ≤ 7 位（3 双 + 1 单），再省两次查表
+#include "fastio.hpp"
+```
+
+### 例：`cin` / `cout` 直接变成快读快写
+
+```cpp
+#define FASTIO_REPLACE_CIN_COUT
+#include "fastio.hpp"
+
+int main() {
+    int n; cin >> n;                       // 全局 cin 就是 fastio::io
+    long long s = 0, x;
+    for (int i = 0; i < n; i++) { cin >> x; s += x; }
+    cout << s << endl;                     // endl == '\n'，程序结束自动 flush
+}
+```
+
+不用再 `#include <iostream>`——全局 `cin/cout/endl` 会盖住 `using namespace std`
+里的那三个（`std::cin` 显式写依然可用，但千万别混用）。
+iostream 的 `setw / fixed / tie` 之类花活没有，要格式化请 `printf`。
+
+### 选项收益（100 MiB、全部 9 位正整数，`make benchopt`）
+
+同一批数据，连开 `NO_EOF_CHECK + ASSUME_UNSIGNED + STEPS_INT=4 + STEPS_LL=9`：
+
+| 读入档位（read_n） | 默认配置 | 全选项 |
+|---|---:|---:|
+| mmap + 双字节打表 | 70.3 ms | **60.6 ms（-14%）** |
+| UltraReader | 63.2 ms | **53.4 ms（-16%）** |
+| ★ 主库 | 60.3 ms | **51.0 ms（-15%）** |
+
+`STEPS_INT=4` 恰好覆盖 9 位数字（4 双字节 + 1 单字节），每次少一次失配查表，
+加上符号判断消失，双字节打表系稳定快 15% 上下；fread / streambuf 逐字符档与
+写侧基本无感（瓶颈不在这里）。共享机器 ±15% 噪声，方向稳定，以你本机实测为准。
+
+---
+
+## 5. 性能（本机实测）
 
 环境：2 核 Intel Xeon @2.60 GHz / 1.9 GiB RAM / g++ 14.2 `-O2`，100 MiB 输入，3 轮取中位数。
 
@@ -190,7 +253,7 @@ int n = fio_ultra::in.read<int>();     fio_ultra::in.read_n(a, n);
 > `if (*p=='-')` 快 30%+，因为负号分支几乎必然预测失败；
 > **② 映射尾部挂哨兵页**，热循环彻底不判边界。
 
-## 5. 原理（为什么快）
+## 6. 原理（为什么快）
 
 **读**
 1. `mmap` 把整份输入一次性映射进地址空间：没有 `read()` 系统调用往返，没有用户态缓冲拷贝，缺页由内核批量补（带 `MAP_POPULATE` 预取）。
@@ -210,7 +273,7 @@ int n = fio_ultra::in.read<int>();     fio_ultra::in.read_n(a, n);
 
 ---
 
-## 6. 注意事项（踩过的坑）
+## 7. 注意事项（踩过的坑）
 
 - **交互题**：要么每次输出后 `io.flush()`，要么直接 `-DFASTIO_STREAM`；千万别对交互题用整文件 mmap 的思路。
 - **别混用**：用了 `io` 就不要再用 `scanf` / `cin` 读同一个流，缓冲互相看不见对方消费的字节。
@@ -220,7 +283,7 @@ int n = fio_ultra::in.read<int>();     fio_ultra::in.read_n(a, n);
 
 ---
 
-## 7. 目录结构
+## 8. 目录结构
 
 ```
 fastio/
@@ -242,6 +305,8 @@ fastio/
 ├── src/correctness.cpp    ← 主库正确性自检（mmap/流式/边界/往返 20 万随机数）
 ├── src/variants_test.cpp  ← 全部独立写法自检 + 交叉比对
 ├── src/variants_bench.cpp ← 全部独立写法横向对比
+├── src/options_test.cpp   ← 6 组编译期选项组合逐一自检
+├── src/options_bench.cpp  ← 减分支选项收益对照（默认 vs 全选项）
 ├── src/bench_lib.cpp      ← 主库 vs cin/cout（100 MiB）
 ├── src/benchmark.cpp      ← 11 档读 + 8 档写全对照，出 HTML 报告
 ├── Makefile               ← make test / make benchlib / make bench
@@ -249,8 +314,9 @@ fastio/
 ```
 
 ```bash
-make test        # 正确性（主库 + 全部写法自检）
+make test        # 正确性（主库 + 全部写法 + 6 组选项组合自检）
 make benchlib    # 100MiB 主库 vs 标准流
 make benchvar    # 100MiB 全部写法横向对比
+make benchopt    # 100MiB 减分支选项收益对照
 make bench       # 全档位对照 + HTML 报告
 ```

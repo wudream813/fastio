@@ -15,3 +15,11 @@ a.out
 .vscode/
 .idea/
 .DS_Store
+options_test
+opt_no_eof
+opt_unsigned
+opt_steps
+opt_cincout
+opt_combo
+options_bench
+options_bench_fast

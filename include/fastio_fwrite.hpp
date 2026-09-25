@@ -13,6 +13,9 @@
 //  用法：
 //      #include "fastio_fwrite.hpp"
 //      fio_fwrite::out << x << '\n';      // 析构自动 flush
+//
+//  减分支选项（#define 后再 include）：
+//      FASTIO_ASSUME_UNSIGNED  保证没有负数：写侧的符号分支整体消失
 // ============================================================================
 
 #include <cstddef>
@@ -65,8 +68,12 @@ public:
     write(T x) {
         using U = typename std::make_unsigned<T>::type;
         U v;
+#ifdef FASTIO_ASSUME_UNSIGNED
+        v = U(x);  // 用户保证没有负数：符号分支编译期消失
+#else
         if (std::is_signed<T>::value && x < 0) { put('-'); v = U(U(0) - U(x)); }
         else v = U(x);
+#endif
         if (size_t(buf_ + SZ - cur_) < 24) spill();
         char tmp[24];
         int k = 0;

@@ -19,6 +19,12 @@
 //      #include "fastio_ultra.hpp"
 //      int n = fio_ultra::in.read<int>();
 //      fio_ultra::in.read_n(a, n);
+//
+//  减分支选项（#define 后再 include）：
+//      FASTIO_ASSUME_UNSIGNED  保证没有负号：跳过符号处理
+//      FASTIO_PAIR_STEPS_INT   int 级的双字节步数，默认 5（=10 位数字）
+//      FASTIO_PAIR_STEPS_LL    long long 级，默认 10
+//  本写法靠尾部哨兵，本来就零 EOF 判断，不需要 FASTIO_NO_EOF_CHECK。
 // ============================================================================
 
 #include <cstdint>
@@ -32,6 +38,13 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#ifndef FASTIO_PAIR_STEPS_INT
+  #define FASTIO_PAIR_STEPS_INT 5   // int 最长 10 位 = 5 个双字符
+#endif
+#ifndef FASTIO_PAIR_STEPS_LL
+  #define FASTIO_PAIR_STEPS_LL 10   // long long 最长 20 位 = 10 个
+#endif
 
 namespace fio_ultra {
 
@@ -86,6 +99,9 @@ public:
     static inline T parse(const char*& q) {
         using U = typename std::make_unsigned<T>::type;
         while ((unsigned char)*q <= ' ') ++q;
+#ifdef FASTIO_ASSUME_UNSIGNED
+        constexpr bool neg = false;   // 用户承诺无负号：符号分支编译期消失
+#else
         unsigned c0 = (unsigned char)*q;
         bool neg = false;
         if (std::is_signed<T>::value) {
@@ -94,6 +110,7 @@ public:
         } else {
             q += unsigned(c0 == '+');
         }
+#endif
         const int32_t* tb = pair_tbl.v;
         U v = 0;
         int32_t w;
@@ -102,10 +119,37 @@ public:
         v = U(v * 100 + U(w));      \
         q += 2;                     \
     }
-        FIO_ULTRA_STEP FIO_ULTRA_STEP FIO_ULTRA_STEP FIO_ULTRA_STEP FIO_ULTRA_STEP
+#define FIO_ULTRA_STEPS_0
+#define FIO_ULTRA_STEPS_1  FIO_ULTRA_STEP
+#define FIO_ULTRA_STEPS_2  FIO_ULTRA_STEPS_1 FIO_ULTRA_STEP
+#define FIO_ULTRA_STEPS_3  FIO_ULTRA_STEPS_2 FIO_ULTRA_STEP
+#define FIO_ULTRA_STEPS_4  FIO_ULTRA_STEPS_3 FIO_ULTRA_STEP
+#define FIO_ULTRA_STEPS_5  FIO_ULTRA_STEPS_4 FIO_ULTRA_STEP
+#define FIO_ULTRA_STEPS_6  FIO_ULTRA_STEPS_5 FIO_ULTRA_STEP
+#define FIO_ULTRA_STEPS_7  FIO_ULTRA_STEPS_6 FIO_ULTRA_STEP
+#define FIO_ULTRA_STEPS_8  FIO_ULTRA_STEPS_7 FIO_ULTRA_STEP
+#define FIO_ULTRA_STEPS_9  FIO_ULTRA_STEPS_8 FIO_ULTRA_STEP
+#define FIO_ULTRA_STEPS_10 FIO_ULTRA_STEPS_9 FIO_ULTRA_STEP
+#define FIO_ULTRA_PASTE_(a, b) a##b
+#define FIO_ULTRA_PASTE(a, b) FIO_ULTRA_PASTE_(a, b)
         if (sizeof(U) > 4) {
-            FIO_ULTRA_STEP FIO_ULTRA_STEP FIO_ULTRA_STEP FIO_ULTRA_STEP FIO_ULTRA_STEP
+            FIO_ULTRA_PASTE(FIO_ULTRA_STEPS_, FASTIO_PAIR_STEPS_LL)   // 64 位默认 10 步
+        } else {
+            FIO_ULTRA_PASTE(FIO_ULTRA_STEPS_, FASTIO_PAIR_STEPS_INT)  // 32 位默认 5 步
         }
+#undef FIO_ULTRA_PASTE
+#undef FIO_ULTRA_PASTE_
+#undef FIO_ULTRA_STEPS_0
+#undef FIO_ULTRA_STEPS_1
+#undef FIO_ULTRA_STEPS_2
+#undef FIO_ULTRA_STEPS_3
+#undef FIO_ULTRA_STEPS_4
+#undef FIO_ULTRA_STEPS_5
+#undef FIO_ULTRA_STEPS_6
+#undef FIO_ULTRA_STEPS_7
+#undef FIO_ULTRA_STEPS_8
+#undef FIO_ULTRA_STEPS_9
+#undef FIO_ULTRA_STEPS_10
 #undef FIO_ULTRA_STEP
         if ((unsigned)(*q - '0') < 10u) v = U(v * 10 + U(*q++ ^ 48));
         const U mask = U(0) - U(neg);
