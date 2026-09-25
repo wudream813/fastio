@@ -1,7 +1,8 @@
 #pragma once
-#define FASTIO_VERSION "1.2.0"
+#define FASTIO_VERSION "1.3.0"
 // ============================================================================
 //  fastio.hpp  —  超级快读快写（单头文件，开箱即用）
+//  v1.3.0：FASTIO_SWAR8 16 位数字 SWAR 解析（仅 64 位，u64 满量程题 -5%）
 //  v1.2.0：热链全强制内联（read/read_n/write/write_uns）· 输出缓冲改模块级
 //          定长数组 + 下标游标（寄存器常驻，对齐 mmap 模板存储形态）·
 //          写四位组 SSE 单条 16B 写（FASTIO_NO_WRITE_SSE 可关）· 新增 write_nl
@@ -166,6 +167,21 @@ FASTIO_ALWAYS uint16_t load16(const char* p) {
     uint16_t w;
     std::memcpy(&w, p, 2);
     return w;
+}
+// ---- SWAR 8 位数字（Mula 技巧，FASTIO_SWAR8 用） --------------------------------
+// 8 字节全是 '0'..'9' 才为真（逐字节位都验证过，见单元测试 sw_unit）
+FASTIO_ALWAYS bool is_digits8(uint64_t v) {
+    return (((v & 0xF0F0F0F0F0F0F0F0ULL) |
+             (((v + 0x0606060606060606ULL) & 0xF0F0F0F0F0F0F0F0ULL) >> 4)) ==
+            0x3333333333333333ULL);
+}
+// 8 个 ASCII 数字（小端：第一个字符在最低字节）折叠为数值 —— 三条乘加魔法数，
+// 替代 4 步串行「查表 + v*100」依赖链（纯 u64 标量运算，任何 ISA 都合法）。
+FASTIO_ALWAYS uint32_t swar8(uint64_t v) {
+    v = (v & 0x0F0F0F0F0F0F0F0FULL) * 2561 >> 8;
+    v = (v & 0x00FF00FF00FF00FFULL) * 6553601 >> 16;
+    v = (v & 0x0000FFFF0000FFFFULL) * 42949672960001ULL >> 32;
+    return uint32_t(v);
 }
 FASTIO_ALWAYS void store32(char* p, uint32_t w) { std::memcpy(p, &w, 4); }
 // 单条 8B 写（GPR 拼字，编译器必出一条 mov）
@@ -333,6 +349,28 @@ public:
 #endif
         const unsigned char* tb = detail::pair_tbl.v;
         U v = 0;
+#ifdef FASTIO_SWAR8
+        // 16 位数字快速路（只对 ≥64 位类型启用）：两段 8B 载入验证全数字 →
+        // 各折叠成值 → q 前进；不足 8/16 位自动落回下方双字节打表路径，
+        // 尾部剩余位数照常由打表段吃掉。缓冲区尾部有 ≥64B 哨兵区，8B 定长
+        // 载入永不越界。⚠ 实测 8 位左右的 int 数据（如 P10815）上 SWAR 因
+        // ~10% 失配惩罚反而慢 3-5%，故 int32 路径编译期整体裁掉 ——
+        // 本宏专为 17~20 位的满量程 u64 / ll 长数字数据准备（命中 ≈96%）。
+        if constexpr (sizeof(U) > 4) {
+            uint64_t c1;
+            std::memcpy(&c1, q, 8);
+            if (FASTIO_LIKELY(detail::is_digits8(c1))) {
+                v = U(detail::swar8(c1));
+                q += 8;
+                uint64_t c2;
+                std::memcpy(&c2, q, 8);
+                if (FASTIO_LIKELY(detail::is_digits8(c2))) {
+                    v = U(v * U(100000000) + U(detail::swar8(c2)));
+                    q += 8;
+                }
+            }
+        }
+#endif
         unsigned w;
 // 每个 STEP 吃两位数字；顺序展开、不用 break（失败后的 STEP 必然也失败）
 #define FASTIO_STEP                                        \

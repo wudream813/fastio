@@ -29,3 +29,5 @@ opt_iomax
 opt_nows
 opt_nows_u
 opt_nows_c
+opt_swar8
+opt_swar8_race

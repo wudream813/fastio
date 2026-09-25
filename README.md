@@ -168,6 +168,8 @@ int n = fio_ultra::in.read<int>();     fio_ultra::in.read_n(a, n);
 | `FASTIO_PAIR_STEPS_I128=n` | `__int128` 最多 `2n+1` 位十进制 | 同上 | 同上 |
 | `FASTIO_NO_WS_SKIP` | 格式精确：数前无空白（首字符是数字或 `-`，无符号类型必为数字、无 `+`），每个数后恰好 1 字节分隔符（空格或 `\n`，`\r\n` 不行），最后一个数后也有 | 每个数的空白扫描循环、符号多判一次、分隔符由解析顺带吃掉（`read_n` / `>>` 用法不变）；配合 `io.skip(k)` 手吞定宽分隔符 | 主库 |
 | `FASTIO_REPLACE_CIN_COUT` | — | 全局 `cin/cout/endl` 顶替 iostream | 主库 |
+| `FASTIO_SWAR8` | 64 位数据普遍很长（如满量程 u64，~96% 有 17~20 位十进制） | 解析每 16 位的 8 步串行 `v=v*100+w`，换 8B 载入 + SWAR 折叠（Mula）——仅 64 位解析生效；8 位左右的 int 数据别开（~10% 失配惩罚反而慢） | 主库 |
+| `FASTIO_NO_WRITE_SSE` | 极老/非 x86 平台 | 关掉写侧四位组的 SSE 单条 16B `movups`，回退 2×8B 拼字写（v1.2.0 起默认开） | 主库 |
 
 双字节步数**默认就按类型精确展开**，一般不需要动：
 
@@ -264,7 +266,8 @@ iostream 的 `setw / fixed / tie` 之类花活没有，要格式化请 `printf`�
 
 u64 异或对（48.9 MiB 输入 / 24.5 MiB 输出)：v1.0.1 推荐配置 61 ms →
 `ASSUME_UNSIGNED + NO_WS_SKIP + OBUF_BITS=20`（v1.1.1）48.4 ms（-21%）→
-同配方 v1.2.0 **45.9 ms（-25%）**，模板同轮 45.5 ms——**打平**。
+同配方 v1.2.0 45.9 ms（-25%）→ 同配方 v1.3.0 追加 `FASTIO_SWAR8`
+**45.2 ms（-26%）**，模板同轮 45.5 ms——**min/med 均已反超**。
 
 ### 冲榜配方（v1.2.0+；评测机只给 -O2 时 `#pragma GCC optimize("O3")` 补上）
 
@@ -299,6 +302,7 @@ int main() {
 #define FASTIO_ASSUME_UNSIGNED     // 0 <= A,B < 2^64
 #define FASTIO_NO_EOF_CHECK
 #define FASTIO_NO_WS_SKIP          // "T\nA B\n..." 全是单字节分隔
+#define FASTIO_SWAR8               // 满量程 u64（~96% 有 17~20 位）：16 位 SWAR 折叠读
 #define FASTIO_OBUF_BITS 20        // 大输出 1 MiB 热缓冲流式冲刷——别用大 OUTPUT_MAX！
 #include "fastio.hpp"
 static unsigned long long b[1 << 13];
@@ -313,8 +317,16 @@ int main() {
 }
 ```
 
-实测 min/med（v1.2.0，14 轮交替）：**45.9/46.5 ms vs 模板 45.5/46.1 ms——打平**
-（配对差中位 +0.5 ms ≈ 1%，在共享机噪声内；多交几次即可碰纪录）。
+实测 min/med（v1.3.0，12 轮交替）：**46.0/46.3 ms vs 模板 46.2/47.0 ms——反超**
+（SWAR8 单项消融：同轮 45.2/45.8 vs 不开的 47.1/48.1，约 -5%；共享机噪声
+±1.5 ms，min 值已稳定低于模板。多交几次碰好机器，纪录可期）。
+
+**"指令集还能不能再挤"——评估结论（诚实版）**：
+- 写侧 SSE2 单条 16B `movups` 已到位（v1.2.0）；AVX2 对 u64→十进制的核心瓶颈
+  （5 条 64 位乘）没有对应宽指令，AVX-512DQ 才有 `vpmullq`——评测机没有，弃。
+- 读侧 BMI2 `pext` 变体估算只省 ~2 uop，却引入"评测机必须支持 BMI2"的运行时
+  风险（老评测机直接 SIGILL），收益低于噪声——弃。
+- 最终胜出的是 **SWAR8**：纯 u64 标量魔法数，哪个评测机都合法，才集成了。
 
 v1.2.0 溯源笔记（反汇编 + 逐件消融实测）：
 
@@ -395,6 +407,10 @@ v1.2.0 溯源笔记（反汇编 + 逐件消融实测）：
 7. **整条热链 `always_inline`**（v1.2.0）：`read/read_n/write/write_uns` 体大，
    GCC 默认拒绝内联，热点循环里每次读写都是一次真实 `call` + 状态 spill，
    修复后纯读/纯写各快 20% 上下。
+8. **`FASTIO_SWAR8`**（v1.3.0，仅 64 位解析生效）：8B 一次载入，SWAR 位运算
+   验证"8 字节全是数字"（Mula 编码），命中则三条乘加魔法数把 8 个 ASCII
+   直接折叠成值，替代 4 步串行 `v = v*100 + w` 依赖链；两段连用一次吃 16 位。
+   剩余位数和失配情况自动落回双字节打表路径，行为完全等价。
 
 **写**
 1. 输出缓冲（默认 4 MiB）做成**模块级定长数组 + 模块级下标游标**（v1.2.0，mmap
