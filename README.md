@@ -50,6 +50,8 @@ g++ -O2 -std=c++17 main.cpp -o main
 | 写数组 | `io.write_n(arr, n, ' ');` |
 | 浮点精度 | `io.set_precision(9);` |
 | 手动刷新 | `io.flush();`（**交互题每轮必须**） |
+| 免跳字节 | `io.skip(k);`（配合 `NO_WS_SKIP` 手吞定宽分隔符） |
+| 无检查写字符 | `io.put_nochk(c);`（承诺缓冲未满；紧跟 `write(x)` 后恒安全——写整数已 `reserve(48)`） |
 
 类型支持：所有整型——`int / long long / unsigned / unsigned long long`，
 以及 GNU 扩展的 `__int128 / unsigned __int128`（主库和各手写解析层都支持）；
@@ -259,6 +261,55 @@ iostream 的 `setw / fixed / tie` 之类花活没有，要格式化请 `printf`�
 
 u64 异或对（48.9 MiB 输入 / 24.5 MiB 输出)：v1.0.1 推荐配置 61 ms →
 `ASSUME_UNSIGNED + NO_WS_SKIP + OBUF_BITS=20` **48.4 ms（-21%）**，模板 44 ms。
+
+### 冲榜配方（v1.1.1+；评测机只给 -O2 时 `#pragma GCC optimize("O3")` 补上）
+
+读多写少（P10815 型，带符号 int 求和，939 MiB/1e8 数实测）：
+
+```cpp
+#pragma GCC optimize("O3")
+#define FASTIO_NO_EOF_CHECK
+#define FASTIO_NO_WS_SKIP        // 题面数据：数前无空白、单字节分隔符
+#define FASTIO_PAIR_STEPS_INT 4  // |a_i| ≤ 1e8 → 最长 9 位，4 对+1 单恰好
+#include "fastio.hpp"
+static int b[1 << 16];
+int main() {
+    int n = io.read<int>();
+    long long s = 0;
+    for (int i = 0; i < n; ++i) s += io.read<int>();   // 融合读：-O3 下实测超 mmap 模板
+    io << s << '\n';
+}
+```
+
+实测 min/med：**587/606 ms vs 模板 597/619 ms（胜 ~2%）**；纯 -O2 无 pragma 时改用
+`read_n` 分块（615 vs 597，差 ~3%），以自己机器实测为准。
+
+读写各半（U539374 型，u64 满量程、逐行输出）：
+
+```cpp
+#pragma GCC optimize("O3")
+#define FASTIO_ASSUME_UNSIGNED     // 0 <= A,B < 2^64
+#define FASTIO_NO_EOF_CHECK
+#define FASTIO_NO_WS_SKIP          // "T\nA B\n..." 全是单字节分隔
+#define FASTIO_OBUF_BITS 20        // 大输出 1 MiB 热缓冲流式冲刷——别用大 OUTPUT_MAX！
+#include "fastio.hpp"
+static unsigned long long b[1 << 13];
+int main() {
+    unsigned long long t; io >> t;
+    for (unsigned long long rem = t * 2; rem > 0;) {
+        size_t k = rem < (1 << 13) ? (size_t)rem : (1 << 13);
+        io.read_n(b, k);
+        for (size_t i = 0; i < k; i += 2) { io.write(b[i] ^ b[i + 1]); io.put_nochk('\n'); }
+        rem -= k;
+    }
+}
+```
+
+实测 min/med：45.6/46.8 ms vs 模板 44.1/46.4 ms（**基本打平**）。纯写侧每行仍比
+模板慢 ~15%（它的四条 4B store 被 GCC 拼成单条 movups；下标态/逐级余数/16B 拼写
+三种移植实测均不赢，保留 v1.1.0 写法），写只占该题一半时间，全程序差 ~1-3%，
+同机多交几次即可碰纪录。v1.1.1 起两张打表改为 `constexpr` 编译期求值（.rodata），
+程序启动零初始化开销。
 
 ---
 
