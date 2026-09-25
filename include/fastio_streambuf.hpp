@@ -19,6 +19,7 @@
 //  减分支选项（#define 后再 include）：
 //      FASTIO_NO_EOF_CHECK     忽略 EOF：跳过空白/回退处不再判 EOF（数据必须规范）
 //      FASTIO_ASSUME_UNSIGNED  保证没有负号：读、写两侧的符号分支整体消失
+//  支持 __int128（GNU 扩展类型）。
 // ============================================================================
 
 #include <cstdint>
@@ -29,6 +30,20 @@
 #include <type_traits>
 
 namespace fio_sbuf {
+// ---- __int128 兼容：严格 -std=c++17 下标准萃取不认识这个 GNU 扩展类型 ------
+template <class T> struct uns_of { using type = typename std::make_unsigned<T>::type; };
+template <class T> struct is_signed_of : std::is_signed<T> {};
+template <class T> struct is_int_of
+    : std::integral_constant<bool, std::is_integral<T>::value> {};
+#if defined(__SIZEOF_INT128__)
+template <> struct uns_of<__int128_t> { using type = __uint128_t; };
+template <> struct uns_of<__uint128_t> { using type = __uint128_t; };
+template <> struct is_signed_of<__int128_t> : std::true_type {};
+template <> struct is_int_of<__int128_t> : std::true_type {};
+template <> struct is_int_of<__uint128_t> : std::true_type {};
+#endif
+template <class T> using uns_t = typename uns_of<T>::type;
+
 
 struct QuadTable {
     uint32_t v[10000];
@@ -77,7 +92,7 @@ public:
 
     template <class T>
     T read() {
-        using U = typename std::make_unsigned<T>::type;
+        using U = uns_t<T>;
         int c = gc();
 #ifdef FASTIO_NO_EOF_CHECK
         while (c <= ' ') c = gc();        // 忽略 EOF：空白循环不判 EOF
@@ -98,7 +113,7 @@ public:
 #else
         if (c != EOF) --p1_;
 #endif
-        const U mask = U(0) - U(neg && std::is_signed<T>::value);
+        const U mask = U(0) - U(neg && is_signed_of<T>::value);
         return T((v ^ mask) - mask);  // INT_MIN 安全
     }
 
@@ -117,7 +132,8 @@ public:
         return *this;
     }
     template <class T>
-    typename std::enable_if<std::is_arithmetic<T>::value, Reader&>::type read(T& x) {
+    typename std::enable_if<is_int_of<T>::value || std::is_floating_point<T>::value,
+                            Reader&>::type read(T& x) {
         x = read<T>();
         return *this;
     }
@@ -170,10 +186,11 @@ public:
 
     template <class U>
     void write_uns(U x) {   // 同样用四位打表
-        if (size_t(buf_ + SZ - cur_) < 24) flush();
+        constexpr size_t WD = sizeof(U) > 8 ? 48 : 24;  // __int128 最长 39 位
+        if (size_t(buf_ + SZ - cur_) < WD) flush();
         const uint32_t* tb = quad_tbl.v;
-        char tmp[48];
-        char* e = tmp + 24;
+        char tmp[WD * 2];
+        char* e = tmp + WD;
         char* q = e;
         while (x >= 10000) {
             q -= 4;
@@ -189,19 +206,19 @@ public:
         q -= (4 - skip);
         std::memcpy(q, four + skip, size_t(4 - skip));
         size_t len = size_t(e - q);
-        std::memcpy(cur_, q, 24);
+        std::memcpy(cur_, q, WD);
         cur_ += len;
     }
 
     template <class T>
-    typename std::enable_if<std::is_integral<T>::value && !std::is_same<T, char>::value,
+    typename std::enable_if<is_int_of<T>::value && !std::is_same<T, char>::value,
                             void>::type
     write(T x) {
-        using U = typename std::make_unsigned<T>::type;
+        using U = uns_t<T>;
 #ifdef FASTIO_ASSUME_UNSIGNED
         write_uns(U(x));  // 用户保证没有负数：符号分支编译期消失
 #else
-        if (std::is_signed<T>::value && x < 0) { put('-'); write_uns(U(U(0) - U(x))); }
+        if (is_signed_of<T>::value && x < 0) { put('-'); write_uns(U(U(0) - U(x))); }
         else write_uns(U(x));
 #endif
     }

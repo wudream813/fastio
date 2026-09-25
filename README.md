@@ -51,8 +51,10 @@ g++ -O2 -std=c++17 main.cpp -o main
 | 浮点精度 | `io.set_precision(9);` |
 | 手动刷新 | `io.flush();`（**交互题每轮必须**） |
 
-类型支持：所有整型（含 `unsigned long long`、`__int128` 除外）、`bool`、`char`、`char*`、`std::string`、`float/double`。
-**边界安全**：`0`、`INT_MIN`、`LLONG_MIN`、`ULLONG_MAX`、`+` 前缀、`\r\n` 全部特判过。
+类型支持：所有整型——`int / long long / unsigned / unsigned long long`，
+以及 GNU 扩展的 `__int128 / unsigned __int128`（主库和各手写解析层都支持）；
+`bool`、`char`、`char*`、`std::string`、`float/double`。
+**边界安全**：`0`、`INT_MIN`、`LLONG_MIN`、`ULLONG_MAX`、`__int128` 的 39 位满位值、`+` 前缀、`\r\n` 全部特判过。
 
 ### 需要读写文件而不是标准流
 
@@ -74,8 +76,9 @@ fastio::FastIO fio(stdin, stdout);          // 读写合体对象，也可 fio.b
 | `FASTIO_OBUF_BITS` | 输出缓冲位数，默认 22（4 MiB） |
 | `FASTIO_IBUF_BITS` | 流式输入缓冲位数，默认 20（1 MiB） |
 
-减分支 / 顶替 iostream 的选项（`FASTIO_NO_EOF_CHECK`、`FASTIO_ASSUME_UNSIGNED`、
-`FASTIO_PAIR_STEPS_INT/_LL`、`FASTIO_REPLACE_CIN_COUT`）见下面 **§4 编译期选项**。
+减分支 / 顶替 iostream / 激进定制 的选项（`FASTIO_NO_EOF_CHECK`、`FASTIO_ASSUME_UNSIGNED`、
+`FASTIO_PAIR_STEPS_INT/_LL/_I128`、`FASTIO_REPLACE_CIN_COUT`、`FASTIO_INPUT_MAX`、
+`FASTIO_OUTPUT_MAX`）见下面 **§4 编译期选项**。
 
 ---
 
@@ -148,19 +151,50 @@ int n = fio_ultra::in.read<int>();     fio_ultra::in.read_n(a, n);
 
 ## 4. 编译期选项（#define 后再 #include）
 
-**⚠️ 每个选项都是你对数据的一份承诺；承诺不成立 = 结果错误。**
+**⚠️ 每个选项都是你对数据的一份承诺；承诺不成立 = 结果错误（激进选项甚至会崩）。**
 同一个 `#define` 对后面包含的所有手写解析层（主库 + 各独立头）同时生效。
+
+### 减分支选项
 
 | 宏 | 你的承诺 | 被删掉的分支 | 作用于 |
 |---|---|---|---|
 | `FASTIO_NO_EOF_CHECK` | 数据完整规范、热路径读不到 EOF | `getch/peek/read` 的边界判断、流式 refill | 主库、fread、streambuf、getchar(±unlocked) |
 | `FASTIO_ASSUME_UNSIGNED` | 输入没有负号（也没有 `+`） | 读侧符号判断、写侧 `x < 0` 判断 | **全部**手写解析层 |
-| `FASTIO_PAIR_STEPS_INT=n` | `int` 最多 `2n+1` 位十进制（默认 5） | 多余的双字节查表展开 | 主库、mmap、ultra |
-| `FASTIO_PAIR_STEPS_LL=n` | `long long` 同上（默认 10） | 同上 | 同上 |
+| `FASTIO_PAIR_STEPS_INT=n` | ≤32 位整型最多 `2n+1` 位十进制 | 多余的双字节查表展开 | 主库、mmap、ultra |
+| `FASTIO_PAIR_STEPS_LL=n` | 64 位整型最多 `2n+1` 位十进制 | 同上 | 同上 |
+| `FASTIO_PAIR_STEPS_I128=n` | `__int128` 最多 `2n+1` 位十进制 | 同上 | 同上 |
 | `FASTIO_REPLACE_CIN_COUT` | — | 全局 `cin/cout/endl` 顶替 iostream | 主库 |
+
+双字节步数**默认就按类型精确展开**，一般不需要动：
+
+| 类型 | 最长十进制位数 | 双字节展开 |
+|---|---:|---:|
+| `int8 / uint8` | 3 | 1 对 + 末尾单字节 |
+| `short / unsigned short` | 5 | 2 对 + 1 单 |
+| **`int / unsigned int`** | **10** | **5 对** |
+| **`long long`** | **19** | **9 对 + 1 单** |
+| **`unsigned long long`** | **20** | **10 对** |
+| **`__int128 / unsigned __int128`** | **39** | **19 对 + 1 单** |
+
+只有当你**知道数据位数更小**（比如坐标 ≤ 6 位）时才覆盖调小，省几次失配查表。
 
 > mmap / ultra / mmap_byte 三个头靠尾部哨兵本来就零 EOF 判断，
 > `FASTIO_NO_EOF_CHECK` 对它们没有可删的分支，为统一开关清单仍接受该宏。
+
+### 激进选项（最后一次系统调用都省掉）
+
+| 宏 | 你的承诺 | 效果 | 违约后果 |
+|---|---|---|---|
+| `FASTIO_INPUT_MAX=n` | stdin 总量 ≤ n **字节** | attach 时一口气整读到 EOF（连 mmap 都不用），之后零系统调用、零 refill | **超出部分直接丢弃**；口径含管道——所以**交互题绝对禁用**（会一直阻塞等 EOF） |
+| `FASTIO_OUTPUT_MAX=n` | 总输出 ≤ n **字节** | 缓冲一次配足，整个程序只在结束时 `fwrite` 一次；`put/reserve` 的边界判断全删 | **堆损坏/段错误**（stdlib 不会拦你） |
+
+```cpp
+#define FASTIO_INPUT_MAX  (4 << 20)    // 输入 ≤ 4 MiB：一次读入
+#define FASTIO_OUTPUT_MAX (1 << 20)    // 输出 ≤ 1 MiB：一次写出
+#include "fastio.hpp"
+```
+
+适合数据规模写死在自己手里的大文件批处理场景（离线评测、数据生成器）。
 
 ### 例：竞赛数据（保证非负、读的是完整文件）
 
@@ -195,12 +229,12 @@ iostream 的 `setw / fixed / tie` 之类花活没有，要格式化请 `printf`�
 
 | 读入档位（read_n） | 默认配置 | 全选项 |
 |---|---:|---:|
-| mmap + 双字节打表 | 70.3 ms | **60.6 ms（-14%）** |
-| UltraReader | 63.2 ms | **53.4 ms（-16%）** |
-| ★ 主库 | 60.3 ms | **51.0 ms（-15%）** |
+| mmap + 双字节打表 | 77.5 ms | **59.7 ms（-23%）** |
+| UltraReader | 79.5 ms | **58.2 ms（-27%）** |
+| ★ 主库 | 74.6 ms | **55.2 ms（-26%）** |
 
 `STEPS_INT=4` 恰好覆盖 9 位数字（4 双字节 + 1 单字节），每次少一次失配查表，
-加上符号判断消失，双字节打表系稳定快 15% 上下；fread / streambuf 逐字符档与
+加上符号判断消失，双字节打表系稳定快 20% 上下；fread / streambuf 逐字符档与
 写侧基本无感（瓶颈不在这里）。共享机器 ±15% 噪声，方向稳定，以你本机实测为准。
 
 ---
@@ -275,11 +309,15 @@ iostream 的 `setw / fixed / tie` 之类花活没有，要格式化请 `printf`�
 
 ## 7. 注意事项（踩过的坑）
 
-- **交互题**：要么每次输出后 `io.flush()`，要么直接 `-DFASTIO_STREAM`；千万别对交互题用整文件 mmap 的思路。
+- **交互题**：要么每次输出后 `io.flush()`，要么直接 `-DFASTIO_STREAM`；千万别对交互题用整文件 mmap 的思路。**`FASTIO_INPUT_MAX` 尤其禁止**——它会一直读到 EOF 才往下走。
 - **别混用**：用了 `io` 就不要再用 `scanf` / `cin` 读同一个流，缓冲互相看不见对方消费的字节。
+- **激进选项的边界**：`FASTIO_INPUT_MAX` 超了是**静默丢数据**；`FASTIO_OUTPUT_MAX` 超了是**堆损坏**（一般会立刻段错误，正好暴露假承诺）。只在数据规模可控时开。
 - **mmap 只对常规文件生效**，管道/终端会自动降级，不用你操心。
 - 输出如果被 `exit()` / 崩溃打断，缓冲区可能没落盘；析构会 flush，但 `_Exit()` 不会。
 - 负号只在有符号类型下识别；读 `unsigned` 时 `-1` 不做特殊处理。
+- **`__int128`**：主库和 mmap/ultra/fread/streambuf/getchar(±unlocked)/mmap_byte 档都支持读写；
+  它是 GNU 扩展（MSVC 没有），且 `scanf/printf` 档与 iostream 档天生不认它。
+  `-DNDEBUG` 一类 flag 不影响；严格 `-std=c++17` 下标准萃取不认这个类型，库里已自带兼容萃取。
 
 ---
 
@@ -305,18 +343,22 @@ fastio/
 ├── src/correctness.cpp    ← 主库正确性自检（mmap/流式/边界/往返 20 万随机数）
 ├── src/variants_test.cpp  ← 全部独立写法自检 + 交叉比对
 ├── src/variants_bench.cpp ← 全部独立写法横向对比
-├── src/options_test.cpp   ← 6 组编译期选项组合逐一自检
+├── src/options_test.cpp   ← 9 组编译期选项组合逐一自检（含 __int128 / 激进选项）
 ├── src/options_bench.cpp  ← 减分支选项收益对照（默认 vs 全选项）
 ├── src/bench_lib.cpp      ← 主库 vs cin/cout（100 MiB）
 ├── src/benchmark.cpp      ← 11 档读 + 8 档写全对照，出 HTML 报告
 ├── Makefile               ← make test / make benchlib / make bench
+├── .github/workflows/ci.yml              ← 每次 push：编译 + 自检 + 8MiB 快测
+├── .github/workflows/bench-release.yml   ← 打 v* tag：100MiB 全量基准 + 发 Release
 └── report.html            ← 全档位性能报告
 ```
 
 ```bash
-make test        # 正确性（主库 + 全部写法 + 6 组选项组合自检）
+make test        # 正确性（主库 + 全部写法 + 9 组选项组合自检）
 make benchlib    # 100MiB 主库 vs 标准流
 make benchvar    # 100MiB 全部写法横向对比
 make benchopt    # 100MiB 减分支选项收益对照
 make bench       # 全档位对照 + HTML 报告
+
+git tag v1.0.0 && git push origin v1.0.0   # 触发 CI 跑 100MiB 基准并发 Release
 ```

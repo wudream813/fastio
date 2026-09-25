@@ -34,10 +34,18 @@
 //      FASTIO_NO_EOF_CHECK     忽略 EOF：getch/peek/read 不再判边界，流式下不再
 //                              refill —— 数据必须完整规范（mmap/整读文件才安全）
 //      FASTIO_ASSUME_UNSIGNED  保证输入没有负号：读、写两侧的符号分支整体消失
-//      FASTIO_PAIR_STEPS_INT   int 级固定跑几个双字节步，默认 5（10 位数字足够）
-//      FASTIO_PAIR_STEPS_LL    long long 级，默认 10；数据位数小可以调小提速
+//      FASTIO_PAIR_STEPS_INT   覆盖 ≤32 位整型的双字节步数（默认 int/uint 精确 5）
+//      FASTIO_PAIR_STEPS_LL    覆盖 64 位（默认 signed 9 = 19 位 / unsigned 10 = 20 位）
+//      FASTIO_PAIR_STEPS_I128  覆盖 __int128（默认 19 = 39 位）
 //      FASTIO_REPLACE_CIN_COUT 定义全局 cin/cout/endl，直接替换 iostream 写法：
 //                                  int a; cin >> a; cout << a << endl;
+//
+//  激进选项（承诺更硬，换取最后一次系统调用都省掉）：
+//      FASTIO_INPUT_MAX=n      保证 stdin 总量 ≤ n 字节：attach 时一次性读完
+//                              （连 mmap 都不用），之后零系统调用；超出部分丢弃！
+//                              ⚠ 会一口气读到 EOF —— 交互题绝对禁用
+//      FASTIO_OUTPUT_MAX=n     保证总输出 ≤ n 字节：缓冲一次配足，整个程序只
+//                              fwrite 一次；边界检查全删。⚠ 超出 = 堆损坏！
 // ============================================================================
 
 #include <cstdarg>
@@ -45,6 +53,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -71,17 +80,26 @@
 #ifndef FASTIO_IBUF_BITS
   #define FASTIO_IBUF_BITS 20
 #endif
-// 双字节打表的展开步数：int 最长 10 位 = 5 个双字符，ll 最长 20 位 = 10 个。
-// 知道数据位数小（如坐标 ≤ 6 位）可以调小，少几次失败的查表。
+// 双字节打表步数：默认按类型最长十进制位数自动精确展开
+//   int/unsigned 10 位 → 5 对、ll 19 位 → 9 对、ull 20 位 → 10 对、__int128 39 位 → 19 对
+// 想强行调小（知道数据位数少）可用 FASTIO_PAIR_STEPS_INT / _LL / _I128 覆盖：
 #ifndef FASTIO_PAIR_STEPS_INT
   #define FASTIO_PAIR_STEPS_INT 5
 #endif
-#ifndef FASTIO_PAIR_STEPS_LL
-  #define FASTIO_PAIR_STEPS_LL 10
+#if defined(FASTIO_PAIR_STEPS_INT) && (FASTIO_PAIR_STEPS_INT < 0 || FASTIO_PAIR_STEPS_INT > 10)
+  #error "FASTIO_PAIR_STEPS_INT 取值范围 0..10"
 #endif
-#if FASTIO_PAIR_STEPS_INT < 0 || FASTIO_PAIR_STEPS_INT > 10 || \
-    FASTIO_PAIR_STEPS_LL < 0 || FASTIO_PAIR_STEPS_LL > 10
-  #error "FASTIO_PAIR_STEPS_* 取值范围 0..10"
+#if defined(FASTIO_PAIR_STEPS_LL) && (FASTIO_PAIR_STEPS_LL < 0 || FASTIO_PAIR_STEPS_LL > 10)
+  #error "FASTIO_PAIR_STEPS_LL 取值范围 0..10"
+#endif
+#if defined(FASTIO_PAIR_STEPS_I128) && (FASTIO_PAIR_STEPS_I128 < 0 || FASTIO_PAIR_STEPS_I128 > 19)
+  #error "FASTIO_PAIR_STEPS_I128 取值范围 0..19"
+#endif
+#if defined(FASTIO_INPUT_MAX) && FASTIO_INPUT_MAX <= 0
+  #error "FASTIO_INPUT_MAX 必须是正数"
+#endif
+#if defined(FASTIO_OUTPUT_MAX) && FASTIO_OUTPUT_MAX <= 0
+  #error "FASTIO_OUTPUT_MAX 必须是正数"
 #endif
 
 #if defined(__GNUC__)
@@ -141,6 +159,18 @@ struct is_int : std::integral_constant<bool, std::is_integral<T>::value &&
 template <class T>
 struct is_flt : std::is_floating_point<T> {};
 
+// ---- __int128 兼容：严格 -std=c++17 下标准萃取不认识这个 GNU 扩展类型 ------
+template <class T> struct uns_of { using type = typename std::make_unsigned<T>::type; };
+template <class T> struct is_signed_of : std::is_signed<T> {};
+#if defined(__SIZEOF_INT128__)
+template <> struct uns_of<__int128_t> { using type = __uint128_t; };
+template <> struct uns_of<__uint128_t> { using type = __uint128_t; };
+template <> struct is_signed_of<__int128_t> : std::true_type {};
+template <> struct is_int<__int128_t> : std::true_type {};
+template <> struct is_int<__uint128_t> : std::true_type {};
+#endif
+template <class T> using uns_t = typename uns_of<T>::type;
+
 }  // namespace detail
 
 // ==========================================================================
@@ -166,6 +196,11 @@ public:
         fin_ = fp ? fp : stdin;
 #ifdef FASTIO_STREAM
         init_stream();
+        return;
+#elif defined(FASTIO_INPUT_MAX)
+        // 用户承诺总输入 ≤ FASTIO_INPUT_MAX 字节：一口气整读到 EOF（连 mmap 都不用），
+        // 之后热路径永远零系统调用。⚠ 会阻塞等到 EOF —— 交互题绝对禁用本选项！
+        init_gulp(size_t(FASTIO_INPUT_MAX));
         return;
 #else
         int fd = fileno(fin_);
@@ -232,7 +267,7 @@ public:
     // 核心解析：只吃局部指针，不碰成员 —— 供 read<T>() 和 read_n() 复用
     template <class T>
     FASTIO_ALWAYS static T parse_int(const char*& q) {
-        using U = typename std::make_unsigned<T>::type;
+        using U = detail::uns_t<T>;
         while ((unsigned char)*q <= ' ') ++q;
 #ifdef FASTIO_ASSUME_UNSIGNED
         constexpr bool neg = false;   // 用户承诺无负号：符号分支编译期消失
@@ -240,7 +275,7 @@ public:
         // 符号位无分支处理：负号在随机数据上分支预测失败率极高
         unsigned c0 = (unsigned char)*q;
         bool neg = false;
-        if constexpr (std::is_signed<T>::value) {
+        if constexpr (detail::is_signed_of<T>::value) {
             neg = (c0 == '-');
             q += unsigned(neg) | unsigned(c0 == '+');
         } else {
@@ -256,7 +291,7 @@ public:
         v = U(v * 100 + U(w));                             \
         q += 2;                                            \
     }
-// 预处理器层重复：0..10 步，展开数由 FASTIO_PAIR_STEPS_INT / _LL 决定
+// 预处理器层重复：0..19 步（19 对 = 38 位 + 末尾单字节 = 39 位，够 __int128 用）
 #define FASTIO_STEPS_0
 #define FASTIO_STEPS_1  FASTIO_STEP
 #define FASTIO_STEPS_2  FASTIO_STEPS_1 FASTIO_STEP
@@ -268,12 +303,46 @@ public:
 #define FASTIO_STEPS_8  FASTIO_STEPS_7 FASTIO_STEP
 #define FASTIO_STEPS_9  FASTIO_STEPS_8 FASTIO_STEP
 #define FASTIO_STEPS_10 FASTIO_STEPS_9 FASTIO_STEP
+#define FASTIO_STEPS_11 FASTIO_STEPS_10 FASTIO_STEP
+#define FASTIO_STEPS_12 FASTIO_STEPS_11 FASTIO_STEP
+#define FASTIO_STEPS_13 FASTIO_STEPS_12 FASTIO_STEP
+#define FASTIO_STEPS_14 FASTIO_STEPS_13 FASTIO_STEP
+#define FASTIO_STEPS_15 FASTIO_STEPS_14 FASTIO_STEP
+#define FASTIO_STEPS_16 FASTIO_STEPS_15 FASTIO_STEP
+#define FASTIO_STEPS_17 FASTIO_STEPS_16 FASTIO_STEP
+#define FASTIO_STEPS_18 FASTIO_STEPS_17 FASTIO_STEP
+#define FASTIO_STEPS_19 FASTIO_STEPS_18 FASTIO_STEP
 #define FASTIO_PASTE_(a, b) a##b
 #define FASTIO_PASTE(a, b) FASTIO_PASTE_(a, b)
-        if constexpr (sizeof(U) > 4) {
-            FASTIO_PASTE(FASTIO_STEPS_, FASTIO_PAIR_STEPS_LL)   // 64 位默认 10 步
-        } else {
-            FASTIO_PASTE(FASTIO_STEPS_, FASTIO_PAIR_STEPS_INT)  // 32 位默认 5 步
+        // 默认按类型最长十进制位数精确展开，可用 FASTIO_PAIR_STEPS_* 覆盖调小
+        if constexpr (sizeof(U) > 8) {                    // （unsigned）__int128
+#ifdef FASTIO_PAIR_STEPS_I128
+            FASTIO_PASTE(FASTIO_STEPS_, FASTIO_PAIR_STEPS_I128)
+#else
+            FASTIO_STEPS_19                               // 最长 39 位 = 19 对 + 1 单
+#endif
+        } else if constexpr (sizeof(U) > 4) {             // 64 位
+#ifdef FASTIO_PAIR_STEPS_LL
+            FASTIO_PASTE(FASTIO_STEPS_, FASTIO_PAIR_STEPS_LL)
+#else
+            if constexpr (detail::is_signed_of<T>::value) {
+                FASTIO_STEPS_9                            // ll 最长 19 位 = 9 对 + 1 单
+            } else {
+                FASTIO_STEPS_10                           // ull 最长 20 位 = 10 对
+            }
+#endif
+        } else {                                          // ≤32 位
+#ifdef FASTIO_PAIR_STEPS_INT
+            FASTIO_PASTE(FASTIO_STEPS_, FASTIO_PAIR_STEPS_INT)
+#else
+            if constexpr (std::numeric_limits<T>::digits10 + 1 <= 3) {
+                FASTIO_STEPS_1                            // int8/uint8：≤3 位
+            } else if constexpr (std::numeric_limits<T>::digits10 + 1 <= 5) {
+                FASTIO_STEPS_2                            // int16/uint16：≤5 位
+            } else {
+                FASTIO_STEPS_5                            // int32/uint32：10 位
+            }
+#endif
         }
 #undef FASTIO_PASTE
 #undef FASTIO_PASTE_
@@ -288,6 +357,15 @@ public:
 #undef FASTIO_STEPS_8
 #undef FASTIO_STEPS_9
 #undef FASTIO_STEPS_10
+#undef FASTIO_STEPS_11
+#undef FASTIO_STEPS_12
+#undef FASTIO_STEPS_13
+#undef FASTIO_STEPS_14
+#undef FASTIO_STEPS_15
+#undef FASTIO_STEPS_16
+#undef FASTIO_STEPS_17
+#undef FASTIO_STEPS_18
+#undef FASTIO_STEPS_19
 #undef FASTIO_STEP
         if ((unsigned)(*q - '0') < 10u) v = U(v * 10 + U(*q++ ^ 48));
         const U mask = U(0) - U(neg);           // 无分支取负（ASSUME_UNSIGNED 下恒 0）
@@ -480,6 +558,27 @@ private:
         return true;
     }
 
+#ifdef FASTIO_INPUT_MAX
+    // FASTIO_INPUT_MAX：按用户承诺的上限一次配足缓冲，循环直读到 EOF。
+    // 超出承诺的部分直接丢弃（缓冲只有这么大）；malloc 失败兜底为原来的流式。
+    void init_gulp(size_t n) {
+        char* buf = static_cast<char*>(std::malloc(n + PAD));
+        if (!buf) { init_stream(); return; }
+        size_t len = 0;
+        while (len < n) {
+            size_t got = raw_read(buf + len, n - len);
+            if (got == 0) break;   // EOF
+            len += got;
+        }
+        std::memset(buf + len, SENT, PAD);
+        heap_ = buf;
+        p_ = buf;
+        end_ = buf + len;
+        mode_ = SLURPED;
+        stream_ = false;
+    }
+#endif
+
     void init_stream() {
         cap_ = size_t(1) << FASTIO_IBUF_BITS;
         heap_ = static_cast<char*>(std::malloc(cap_ + PAD));
@@ -538,7 +637,13 @@ private:
 // ==========================================================================
 class Writer {
 public:
+#ifdef FASTIO_OUTPUT_MAX
+    // 用户承诺总输出 ≤ FASTIO_OUTPUT_MAX 字节：一次配足，整程只 fwrite 一次。
+    // ⚠ 超出承诺 = 堆损坏（stdlib 不拦）。+64 是写整数时定长 24/48 字节拷贝的尾巴。
+    static constexpr size_t OBUF = size_t(FASTIO_OUTPUT_MAX);
+#else
     static constexpr size_t OBUF = size_t(1) << FASTIO_OBUF_BITS;
+#endif
 
     Writer() : fout_(stdout) {
         buf_ = static_cast<char*>(std::malloc(OBUF + 64));
@@ -581,10 +686,17 @@ public:
     }
 
     FASTIO_ALWAYS void put(char c) {
+#ifndef FASTIO_OUTPUT_MAX
         if (FASTIO_UNLIKELY(cur_ == buf_ + OBUF)) spill();
+#endif
         *cur_++ = c;
     }
     void put_raw(const char* s, size_t n) {
+#ifdef FASTIO_OUTPUT_MAX
+        // 承诺总量 ≤ MAX：单次必 ≤ MAX，边界判断全删
+        std::memcpy(cur_, s, n);
+        cur_ += n;
+#else
         if (FASTIO_UNLIKELY(n >= OBUF)) {
             spill();
             std::fwrite(s, 1, n, fout_);
@@ -593,15 +705,17 @@ public:
         if (FASTIO_UNLIKELY(size_t(buf_ + OBUF - cur_) < n)) spill();
         std::memcpy(cur_, s, n);
         cur_ += n;
+#endif
     }
 
     // ---- 无符号整数：从低位起每次 4 位查表 ----------------------------
     template <class U>
     FASTIO_HOT void write_uns(U x) {
-        reserve(24);
+        constexpr size_t WD = sizeof(U) > 8 ? 48 : 24;  // __int128 最长 39 位 + 符号
+        reserve(WD);
         const uint32_t* tb = detail::quad_tbl.v;
-        char tmp[48];
-        char* e = tmp + 24;
+        char tmp[WD * 2];  // 尾部定长 WD 字节拷贝最多越 q 一格，留足一倍余量
+        char* e = tmp + WD;
         char* q = e;
         while (x >= 10000) {
             q -= 4;
@@ -621,17 +735,17 @@ public:
             std::memcpy(q, four + skip, size_t(4 - skip));
         }
         size_t len = size_t(e - q);
-        std::memcpy(cur_, q, 24);  // 定长拷贝，比变长快；已 reserve
+        std::memcpy(cur_, q, WD);  // 定长拷贝，比变长快；已 reserve
         cur_ += len;
     }
 
     template <class T>
     typename std::enable_if<detail::is_int<T>::value, void>::type write(T x) {
-        using U = typename std::make_unsigned<T>::type;
+        using U = detail::uns_t<T>;
 #ifdef FASTIO_ASSUME_UNSIGNED
         write_uns(U(x));  // 用户保证没有负数：符号分支编译期消失
 #else
-        if constexpr (std::is_signed<T>::value) {
+        if constexpr (detail::is_signed_of<T>::value) {
             if (x < 0) {
                 put('-');
                 write_uns(U(U(0) - U(x)));  // INT_MIN / LLONG_MIN 安全
@@ -684,7 +798,11 @@ public:
 
 private:
     FASTIO_ALWAYS void reserve(size_t n) {
+#ifdef FASTIO_OUTPUT_MAX
+        (void)n;   // 承诺总量 ≤ MAX：永不 spill
+#else
         if (FASTIO_UNLIKELY(size_t(buf_ + OBUF - cur_) < n)) spill();
+#endif
     }
     FILE* fout_ = nullptr;
     FILE* owns_file_ = nullptr;

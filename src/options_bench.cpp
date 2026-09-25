@@ -43,8 +43,7 @@ int main(int argc, char** argv) {
     std::printf("config = FAST  (NO_EOF_CHECK + ASSUME_UNSIGNED + STEPS_INT=%d STEPS_LL=%d)\n",
                 FASTIO_PAIR_STEPS_INT, FASTIO_PAIR_STEPS_LL);
 #else
-    std::printf("config = 默认  (steps_int=%d steps_ll=%d)\n",
-                FASTIO_PAIR_STEPS_INT, FASTIO_PAIR_STEPS_LL);
+    std::printf("config = 默认  (steps 自动：int 5 / ll 9 / ull 10 / i128 19)\n");
 #endif
     std::printf("生成 %d 个 9 位正整数（约 %zu MiB）…\n\n", n, mb);
 

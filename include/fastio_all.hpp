@@ -23,12 +23,16 @@
 //
 //  平时直接用主库 `io` 就行；这个聚合头主要给对照实验用（make benchvar）。
 //
-//  减分支选项（#define 后再 include，对下面包含的所有手写解析层生效）：
+//  编译期选项（#define 后再 include，对下面包含的所有手写解析层统一生效）：
 //      FASTIO_NO_EOF_CHECK     忽略 EOF：fread/streambuf/getchar/主库 不再判 EOF
 //      FASTIO_ASSUME_UNSIGNED  保证没有负号：读、写两侧的符号分支整体消失
-//      FASTIO_PAIR_STEPS_INT   int 级双字节步数，默认 5（mmap/ultra/主库）
-//      FASTIO_PAIR_STEPS_LL    long long 级，默认 10
+//      FASTIO_PAIR_STEPS_INT   ≤32 位双字节步数（默认 int/uint 精确 5；mmap/ultra/主库）
+//      FASTIO_PAIR_STEPS_LL    64 位步数（默认 signed 9 = 19 位 / unsigned 10 = 20 位）
+//      FASTIO_PAIR_STEPS_I128  __int128 步数（默认 19 = 39 位）
 //      FASTIO_REPLACE_CIN_COUT （仅主库）全局 cin/cout/endl 顶替 iostream
+//      FASTIO_INPUT_MAX=n      （仅主库）保证 stdin ≤ n 字节：一次性读入后再零 syscall
+//      FASTIO_OUTPUT_MAX=n     （仅主库）保证输出 ≤ n 字节：整程只 fwrite 一次
+//  全部手写解析层支持 __int128（GNU 扩展类型；严格 -std=c++17 下自带兼容萃取）。
 // ============================================================================
 
 #include "fastio.hpp"

@@ -20,6 +20,7 @@
 //  减分支选项（#define 后再 include）：
 //      FASTIO_NO_EOF_CHECK     忽略 EOF：跳过空白/回退处不再判 EOF（数据必须规范）
 //      FASTIO_ASSUME_UNSIGNED  保证没有负号：读、写两侧的符号分支整体消失
+//  支持 __int128（GNU 扩展类型）。
 // ============================================================================
 
 #include <cstddef>
@@ -28,6 +29,20 @@
 #include <type_traits>
 
 namespace fio_getchar {
+// ---- __int128 兼容：严格 -std=c++17 下标准萃取不认识这个 GNU 扩展类型 ------
+template <class T> struct uns_of { using type = typename std::make_unsigned<T>::type; };
+template <class T> struct is_signed_of : std::is_signed<T> {};
+template <class T> struct is_int_of
+    : std::integral_constant<bool, std::is_integral<T>::value> {};
+#if defined(__SIZEOF_INT128__)
+template <> struct uns_of<__int128_t> { using type = __uint128_t; };
+template <> struct uns_of<__uint128_t> { using type = __uint128_t; };
+template <> struct is_signed_of<__int128_t> : std::true_type {};
+template <> struct is_int_of<__int128_t> : std::true_type {};
+template <> struct is_int_of<__uint128_t> : std::true_type {};
+#endif
+template <class T> using uns_t = typename uns_of<T>::type;
+
 
 class Reader {
 public:
@@ -46,7 +61,7 @@ public:
 
     template <class T>
     T read() {
-        using U = typename std::make_unsigned<T>::type;
+        using U = uns_t<T>;
         int c = gc();
 #ifdef FASTIO_NO_EOF_CHECK
         while (c <= ' ') c = gc();        // 忽略 EOF：空白循环不判 EOF
@@ -67,7 +82,7 @@ public:
 #else
         if (c != EOF) std::ungetc(c, fp_);
 #endif
-        const U mask = U(0) - U(neg && std::is_signed<T>::value);
+        const U mask = U(0) - U(neg && is_signed_of<T>::value);
         return T((v ^ mask) - mask);   // 无分支取负，INT_MIN 安全
     }
 
@@ -86,7 +101,8 @@ public:
         return *this;
     }
     template <class T>
-    typename std::enable_if<std::is_arithmetic<T>::value, Reader&>::type read(T& x) {
+    typename std::enable_if<is_int_of<T>::value || std::is_floating_point<T>::value,
+                            Reader&>::type read(T& x) {
         x = read<T>();
         return *this;
     }
@@ -128,18 +144,18 @@ public:
     inline void put(char c) { std::fputc(c, fp_); }   // fp_==stdout 时即 putchar()
 
     template <class T>
-    typename std::enable_if<std::is_integral<T>::value && !std::is_same<T, char>::value,
+    typename std::enable_if<is_int_of<T>::value && !std::is_same<T, char>::value,
                             void>::type
     write(T x) {
-        using U = typename std::make_unsigned<T>::type;
+        using U = uns_t<T>;
         U v;
 #ifdef FASTIO_ASSUME_UNSIGNED
         v = U(x);  // 用户保证没有负数：符号分支编译期消失
 #else
-        if (std::is_signed<T>::value && x < 0) { put('-'); v = U(U(0) - U(x)); }
+        if (is_signed_of<T>::value && x < 0) { put('-'); v = U(U(0) - U(x)); }
         else v = U(x);
 #endif
-        char buf[24];
+        char buf[sizeof(U) > 8 ? 48 : 24];   // __int128 最长 39 位
         int k = 0;
         do { buf[k++] = char('0' + int(v % 10)); v /= 10; } while (v);
         while (k) put(buf[--k]);

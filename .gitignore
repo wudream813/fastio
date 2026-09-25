@@ -23,3 +23,6 @@ opt_cincout
 opt_combo
 options_bench
 options_bench_fast
+opt_inmax
+opt_outmax
+opt_iomax

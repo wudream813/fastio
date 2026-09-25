@@ -1,0 +1,74 @@
+# Benchmark & Release
+#   · 打 tag（v* 开头）推送：跑全套测试 + 100 MiB 基准，把结果发布成 GitHub Release
+#   · 手动 workflow_dispatch：同样跑基准，只上传 artifact 和 job summary，不发 release
+name: Benchmark & Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # 创建 Release、上传文件用
+
+jobs:
+  bench:
+    name: 100 MiB benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build & test（9 组编译期选项组合 + 全部写法自检）
+        run: |
+          g++ --version
+          make -s test
+
+      - name: Build benchmarks
+        run: make -s benchmark bench_lib variants_bench options_bench options_bench_fast
+
+      - name: Full benchmark（100 MiB，3 轮取中位数）
+        run: |
+          ./benchmark 100 3                      # 产出 report.md / report.html / results.json
+          ./options_bench     100 | tee options_default.txt
+          ./options_bench_fast 100 | tee options_fast.txt
+
+      - name: Package fastio.zip
+        run: |
+          mkdir -p dist/fastio
+          cp -r include src README.md LICENSE Makefile dist/fastio/
+          cd dist && zip -qr fastio.zip fastio
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-report
+          retention-days: 90
+          path: |
+            report.html
+            report.md
+            results.json
+            options_default.txt
+            options_fast.txt
+            dist/fastio.zip
+
+      - name: Job summary
+        run: |
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+          echo '## 减分支选项收益（100 MiB 全正 9 位整数）' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat options_default.txt options_fast.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish release（仅 v* tag）
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body_path: report.md
+          files: |
+            dist/fastio.zip
+            report.html
+            report.md
+            results.json
+            options_default.txt
+            options_fast.txt

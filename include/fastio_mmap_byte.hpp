@@ -33,6 +33,20 @@
 #include <unistd.h>
 
 namespace fio_mmap_byte {
+// ---- __int128 兼容：严格 -std=c++17 下标准萃取不认识这个 GNU 扩展类型 ------
+template <class T> struct uns_of { using type = typename std::make_unsigned<T>::type; };
+template <class T> struct is_signed_of : std::is_signed<T> {};
+template <class T> struct is_int_of
+    : std::integral_constant<bool, std::is_integral<T>::value> {};
+#if defined(__SIZEOF_INT128__)
+template <> struct uns_of<__int128_t> { using type = __uint128_t; };
+template <> struct uns_of<__uint128_t> { using type = __uint128_t; };
+template <> struct is_signed_of<__int128_t> : std::true_type {};
+template <> struct is_int_of<__int128_t> : std::true_type {};
+template <> struct is_int_of<__uint128_t> : std::true_type {};
+#endif
+template <class T> using uns_t = typename uns_of<T>::type;
+
 
 class Reader {
 public:
@@ -80,14 +94,14 @@ public:
     // ---- 单字节解析 ----------------------------------------------------
     template <class T>
     static inline T parse(const char*& q) {
-        using U = typename std::make_unsigned<T>::type;
+        using U = uns_t<T>;
         while ((unsigned char)*q <= ' ') ++q;
 #ifdef FASTIO_ASSUME_UNSIGNED
         constexpr bool neg = false;   // 用户承诺无负号：符号分支编译期消失
 #else
         unsigned c0 = (unsigned char)*q;
         bool neg = false;
-        if (std::is_signed<T>::value) {
+        if (is_signed_of<T>::value) {
             neg = (c0 == '-');
             q += unsigned(neg) | unsigned(c0 == '+');
         } else {
@@ -108,7 +122,7 @@ public:
         return v;
     }
     template <class T>
-    typename std::enable_if<std::is_integral<T>::value && !std::is_same<T, char>::value,
+    typename std::enable_if<is_int_of<T>::value && !std::is_same<T, char>::value,
                             Reader&>::type
     read(T& x) { x = read<T>(); return *this; }
     Reader& read(std::string& s) {

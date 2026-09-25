@@ -22,8 +22,9 @@
 //
 //  减分支选项（#define 后再 include）：
 //      FASTIO_ASSUME_UNSIGNED  保证没有负号：跳过符号处理
-//      FASTIO_PAIR_STEPS_INT   int 级的双字节步数，默认 5（=10 位数字）
-//      FASTIO_PAIR_STEPS_LL    long long 级，默认 10
+//      FASTIO_PAIR_STEPS_INT   ≤32 位双字节步数（默认 int/uint 精确 5）
+//      FASTIO_PAIR_STEPS_LL    64 位步数（默认 signed 9 = 19 位 / unsigned 10 = 20 位）
+//      FASTIO_PAIR_STEPS_I128  __int128 步数（默认 19 = 39 位）
 //  本写法靠尾部哨兵页，本来就零 EOF 判断，不需要 FASTIO_NO_EOF_CHECK。
 // ============================================================================
 
@@ -38,13 +39,22 @@
 #include <unistd.h>
 
 #ifndef FASTIO_PAIR_STEPS_INT
-  #define FASTIO_PAIR_STEPS_INT 5   // int 最长 10 位 = 5 个双字符
+  #define FASTIO_PAIR_STEPS_INT 5   // int/uint 最长 10 位 = 5 个双字符
 #endif
-#ifndef FASTIO_PAIR_STEPS_LL
-  #define FASTIO_PAIR_STEPS_LL 10   // long long 最长 20 位 = 10 个
-#endif
+// 64 位 / 128 位默认按类型精确展开（ll 9 对、ull 10 对、i128 19 对），
+// 可用 FASTIO_PAIR_STEPS_LL / FASTIO_PAIR_STEPS_I128 覆盖。
 
 namespace fio_mmap {
+
+// ---- __int128 兼容：严格 -std=c++17 下标准萃取不认识这个 GNU 扩展类型 ------
+template <class T> struct uns_of { using type = typename std::make_unsigned<T>::type; };
+template <class T> struct is_signed_of : std::is_signed<T> {};
+#if defined(__SIZEOF_INT128__)
+template <> struct uns_of<__int128_t> { using type = __uint128_t; };
+template <> struct uns_of<__uint128_t> { using type = __uint128_t; };
+template <> struct is_signed_of<__int128_t> : std::true_type {};
+#endif
+template <class T> using uns_t = typename uns_of<T>::type;
 
 // ---- 双字节查找表 ----------------------------------------------------------
 struct PairTable {
@@ -111,14 +121,14 @@ public:
     // ---- 核心：双字节打表解析（只吃局部指针） --------------------------
     template <class T>
     static inline T parse(const char*& q) {
-        using U = typename std::make_unsigned<T>::type;
+        using U = uns_t<T>;
         while ((unsigned char)*q <= ' ') ++q;
 #ifdef FASTIO_ASSUME_UNSIGNED
         constexpr bool neg = false;   // 用户承诺无负号：符号分支编译期消失
 #else
         unsigned c0 = (unsigned char)*q;
         bool neg = false;
-        if (std::is_signed<T>::value) {
+        if (is_signed_of<T>::value) {
             neg = (c0 == '-');
             q += unsigned(neg) | unsigned(c0 == '+');
         }
@@ -142,12 +152,33 @@ public:
 #define FIO_MMAP_STEPS_8  FIO_MMAP_STEPS_7 FIO_MMAP_STEP
 #define FIO_MMAP_STEPS_9  FIO_MMAP_STEPS_8 FIO_MMAP_STEP
 #define FIO_MMAP_STEPS_10 FIO_MMAP_STEPS_9 FIO_MMAP_STEP
+#define FIO_MMAP_STEPS_11 FIO_MMAP_STEPS_10 FIO_MMAP_STEP
+#define FIO_MMAP_STEPS_12 FIO_MMAP_STEPS_11 FIO_MMAP_STEP
+#define FIO_MMAP_STEPS_13 FIO_MMAP_STEPS_12 FIO_MMAP_STEP
+#define FIO_MMAP_STEPS_14 FIO_MMAP_STEPS_13 FIO_MMAP_STEP
+#define FIO_MMAP_STEPS_15 FIO_MMAP_STEPS_14 FIO_MMAP_STEP
+#define FIO_MMAP_STEPS_16 FIO_MMAP_STEPS_15 FIO_MMAP_STEP
+#define FIO_MMAP_STEPS_17 FIO_MMAP_STEPS_16 FIO_MMAP_STEP
+#define FIO_MMAP_STEPS_18 FIO_MMAP_STEPS_17 FIO_MMAP_STEP
+#define FIO_MMAP_STEPS_19 FIO_MMAP_STEPS_18 FIO_MMAP_STEP
 #define FIO_MMAP_PASTE_(a, b) a##b
 #define FIO_MMAP_PASTE(a, b) FIO_MMAP_PASTE_(a, b)
-        if (sizeof(U) > 4) {
-            FIO_MMAP_PASTE(FIO_MMAP_STEPS_, FASTIO_PAIR_STEPS_LL)   // 64 位默认 10 步
+        // 默认按类型最长十进制位数精确展开，可用 FASTIO_PAIR_STEPS_* 覆盖调小
+        if (sizeof(U) > 8) {                    // （unsigned）__int128
+#ifdef FASTIO_PAIR_STEPS_I128
+            FIO_MMAP_PASTE(FIO_MMAP_STEPS_, FASTIO_PAIR_STEPS_I128)
+#else
+            FIO_MMAP_STEPS_19                       // 最长 39 位 = 19 对 + 1 单
+#endif
+        } else if (sizeof(U) > 4) {            // 64 位
+#ifdef FASTIO_PAIR_STEPS_LL
+            FIO_MMAP_PASTE(FIO_MMAP_STEPS_, FASTIO_PAIR_STEPS_LL)
+#else
+            if (is_signed_of<T>::value) { FIO_MMAP_STEPS_9 }   // ll 19 位 = 9 对 + 1 单
+            else                        { FIO_MMAP_STEPS_10 }  // ull 20 位 = 10 对
+#endif
         } else {
-            FIO_MMAP_PASTE(FIO_MMAP_STEPS_, FASTIO_PAIR_STEPS_INT)  // 32 位默认 5 步
+            FIO_MMAP_PASTE(FIO_MMAP_STEPS_, FASTIO_PAIR_STEPS_INT)  // ≤32 位默认 5 步
         }
 #undef FIO_MMAP_PASTE
 #undef FIO_MMAP_PASTE_
@@ -162,6 +193,15 @@ public:
 #undef FIO_MMAP_STEPS_8
 #undef FIO_MMAP_STEPS_9
 #undef FIO_MMAP_STEPS_10
+#undef FIO_MMAP_STEPS_11
+#undef FIO_MMAP_STEPS_12
+#undef FIO_MMAP_STEPS_13
+#undef FIO_MMAP_STEPS_14
+#undef FIO_MMAP_STEPS_15
+#undef FIO_MMAP_STEPS_16
+#undef FIO_MMAP_STEPS_17
+#undef FIO_MMAP_STEPS_18
+#undef FIO_MMAP_STEPS_19
 #undef FIO_MMAP_STEP
         if ((unsigned)(*q - '0') < 10u) v = U(v * 10 + U(*q++ ^ 48));
         const U mask = U(0) - U(neg);   // 无分支取负，INT_MIN 安全

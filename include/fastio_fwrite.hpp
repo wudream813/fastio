@@ -16,6 +16,7 @@
 //
 //  减分支选项（#define 后再 include）：
 //      FASTIO_ASSUME_UNSIGNED  保证没有负数：写侧的符号分支整体消失
+//  支持 __int128（GNU 扩展类型）。
 // ============================================================================
 
 #include <cstddef>
@@ -26,6 +27,20 @@
 #include <type_traits>
 
 namespace fio_fwrite {
+// ---- __int128 兼容：严格 -std=c++17 下标准萃取不认识这个 GNU 扩展类型 ------
+template <class T> struct uns_of { using type = typename std::make_unsigned<T>::type; };
+template <class T> struct is_signed_of : std::is_signed<T> {};
+template <class T> struct is_int_of
+    : std::integral_constant<bool, std::is_integral<T>::value> {};
+#if defined(__SIZEOF_INT128__)
+template <> struct uns_of<__int128_t> { using type = __uint128_t; };
+template <> struct uns_of<__uint128_t> { using type = __uint128_t; };
+template <> struct is_signed_of<__int128_t> : std::true_type {};
+template <> struct is_int_of<__int128_t> : std::true_type {};
+template <> struct is_int_of<__uint128_t> : std::true_type {};
+#endif
+template <class T> using uns_t = typename uns_of<T>::type;
+
 
 class Writer {
 public:
@@ -63,19 +78,20 @@ public:
     }
 
     template <class T>
-    typename std::enable_if<std::is_integral<T>::value && !std::is_same<T, char>::value,
+    typename std::enable_if<is_int_of<T>::value && !std::is_same<T, char>::value,
                             void>::type
     write(T x) {
-        using U = typename std::make_unsigned<T>::type;
+        using U = uns_t<T>;
         U v;
 #ifdef FASTIO_ASSUME_UNSIGNED
         v = U(x);  // 用户保证没有负数：符号分支编译期消失
 #else
-        if (std::is_signed<T>::value && x < 0) { put('-'); v = U(U(0) - U(x)); }
+        if (is_signed_of<T>::value && x < 0) { put('-'); v = U(U(0) - U(x)); }
         else v = U(x);
 #endif
-        if (size_t(buf_ + SZ - cur_) < 24) spill();
-        char tmp[24];
+        constexpr size_t WD = sizeof(U) > 8 ? 48 : 24;  // __int128 最长 39 位
+        if (size_t(buf_ + SZ - cur_) < WD) spill();
+        char tmp[WD];
         int k = 0;
         do { tmp[k++] = char('0' + int(v % 10)); v /= 10; } while (v);   // 逐位取模
         while (k) *cur_++ = tmp[--k];
