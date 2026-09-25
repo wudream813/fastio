@@ -26,3 +26,6 @@ options_bench_fast
 opt_inmax
 opt_outmax
 opt_iomax
+opt_nows
+opt_nows_u
+opt_nows_c

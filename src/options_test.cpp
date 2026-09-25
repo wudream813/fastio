@@ -175,7 +175,9 @@ static Gen gen_data() {
   #ifndef FASTIO_ASSUME_UNSIGNED
     g.emit_int(INT_MIN + 1);          // 10 位负值；INT_MIN 留给 variants_test
     g.emit_int(-1);
-    g.emit_int_raw("+99", 99);        // + 前缀也认
+  #ifndef FASTIO_NO_WS_SKIP
+    g.emit_int_raw("+99", 99);        // + 前缀也认（NO_WS_SKIP 承诺首字符仅数字或 '-'）
+  #endif
   #endif
 #else
     g.emit_int((int)nines(IDI));      // 位数预算内满位值

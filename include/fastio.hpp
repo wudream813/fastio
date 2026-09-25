@@ -37,6 +37,12 @@
 //                              EOF 检查），所以管道喂数照样安全——只要你保证
 //                              数据规范、读不到流末尾。
 //      FASTIO_ASSUME_UNSIGNED  保证输入没有负号：读、写两侧的符号分支整体消失
+//      FASTIO_NO_WS_SKIP       保证格式精确：数前无空白（首字符是数字或 '-'，
+//                              unsigned 必为数字），每个数后恰好 1 字节分隔符
+//                              （空格或 '\n'，'\r\n' 不行），最后一个数后也
+//                              必须有。解析不再扫描空白、不再处理 '+'，并顺带
+//                              吃掉分隔符——read_n / >> 用法不变，每个数省
+//                              掉数拍。配合 io.skip(k) 可手吞定宽分隔符。
 //      FASTIO_PAIR_STEPS_INT   覆盖 ≤32 位整型的双字节步数（默认 int/uint 精确 5）
 //      FASTIO_PAIR_STEPS_LL    覆盖 64 位（默认 signed 9 = 19 位 / unsigned 10 = 20 位）
 //      FASTIO_PAIR_STEPS_I128  覆盖 __int128（默认 19 = 39 位）
@@ -121,14 +127,15 @@ namespace fastio {
 namespace detail {
 
 // ---------------------------------------------------------------- 打表 ----
-// 双字节表：小端下 "37" 这两个字节拼成的 uint16 索引到 37；非数字对为 -1
+// 双字节表：小端下 "37" 这两个字节拼成的 uint16 索引到 37+1；非数字对为 0
+// （值 +1 编码：一次 !=0 判断同时完成有效性检查与取值；char 表 64KB，
+//   热点数字对只占约 37 条缓存行，比 int32 表的约 100 条省 3 倍 L1d）
 struct PairTable {
-    int32_t v[65536];
-    PairTable() {
-        for (int i = 0; i < 65536; ++i) v[i] = -1;
+    unsigned char v[65536];
+    PairTable() : v{} {
         for (int a = '0'; a <= '9'; ++a)
             for (int b = '0'; b <= '9'; ++b)
-                v[a | (b << 8)] = (a ^ 48) * 10 + (b ^ 48);
+                v[a | (b << 8)] = (unsigned char)((a ^ 48) * 10 + (b ^ 48) + 1);
     }
 };
 
@@ -245,6 +252,10 @@ public:
     const char* end() const { return end_; }
     size_t remain() const { return p_ < end_ ? size_t(end_ - p_) : 0; }
 
+    // 精确跳字节：配合 FASTIO_NO_WS_SKIP 自行吞固定宽度分隔符（等价于
+    // 某些模板的 IO_next(k)）。程序员保证不越过输入末尾。
+    Reader& skip(ptrdiff_t n = 1) { p_ += n; return *this; }
+
     // ---- 字符级 ------------------------------------------------------
     FASTIO_ALWAYS int getch() {  // 原样取一个字节，无则 EOF
 #ifndef FASTIO_NO_EOF_CHECK
@@ -271,9 +282,18 @@ public:
     template <class T>
     FASTIO_ALWAYS static T parse_int(const char*& q) {
         using U = detail::uns_t<T>;
+#ifndef FASTIO_NO_WS_SKIP
         while ((unsigned char)*q <= ' ') ++q;
+#endif
 #ifdef FASTIO_ASSUME_UNSIGNED
         constexpr bool neg = false;   // 用户承诺无负号：符号分支编译期消失
+#elif defined(FASTIO_NO_WS_SKIP)
+        // 用户承诺首字符只会是数字或 '-'：符号处理只剩一次比较
+        bool neg = false;
+        if constexpr (detail::is_signed_of<T>::value) {
+            neg = (*q == '-');
+            q += unsigned(neg);
+        }
 #else
         // 符号位无分支处理：负号在随机数据上分支预测失败率极高
         unsigned c0 = (unsigned char)*q;
@@ -285,13 +305,13 @@ public:
             q += unsigned(c0 == '+');
         }
 #endif
-        const int32_t* tb = detail::pair_tbl.v;
+        const unsigned char* tb = detail::pair_tbl.v;
         U v = 0;
-        int32_t w;
+        unsigned w;
 // 每个 STEP 吃两位数字；顺序展开、不用 break（失败后的 STEP 必然也失败）
 #define FASTIO_STEP                                        \
-    if (FASTIO_LIKELY((w = tb[detail::load16(q)]) >= 0)) { \
-        v = U(v * 100 + U(w));                             \
+    if (FASTIO_LIKELY((w = tb[detail::load16(q)]) != 0)) { \
+        v = U(v * 100 + U(w - 1));                         \
         q += 2;                                            \
     }
 // 预处理器层重复：0..19 步（19 对 = 38 位 + 末尾单字节 = 39 位，够 __int128 用）
@@ -370,10 +390,18 @@ public:
 #undef FASTIO_STEPS_18
 #undef FASTIO_STEPS_19
 #undef FASTIO_STEP
+#ifdef FASTIO_NO_WS_SKIP
+        // 承诺数据规范：此处字节只会是数字或分隔符，可用位测试快判
+        if ((unsigned char)*q & 0x10) v = U(v * 10 + U((unsigned char)*q++ & 0xF));
+        // 用户承诺每个数后恰好 1 字节分隔符（空格或 '\n'）：解析顺带吃掉。
+        // 末尾最后一个数也必须有分隔符（OI 数据恒以空白结尾），否则多读。
+        ++q;
+#else
         if ((unsigned)(*q - '0') < 10u) v = U(v * 10 + U(*q++ ^ 48));
-        const U mask = U(0) - U(neg);           // 无分支取负（ASSUME_UNSIGNED 下恒 0）
-        v = U((v ^ mask) - mask);               // INT_MIN / LLONG_MIN 安全
-        return T(v);
+#endif
+        // 三元取负：编译成 neg+cmov（比 mask 少一拍），ASSUME_UNSIGNED 下编译期折叠；
+        // U(0) - v 写法对 INT_MIN / LLONG_MIN 安全
+        return T(neg ? U(0) - v : v);
     }
 
     template <class T>
@@ -712,35 +740,94 @@ public:
 #endif
     }
 
-    // ---- 无符号整数：从低位起每次 4 位查表 ----------------------------
+    // ---- 无符号整数：四位一组打表写 ------------------------------------
+    // 首组（1..4 位，无前导零）直接落缓冲
+    static FASTIO_ALWAYS char* put_head(char* p, unsigned h, const uint32_t* tb) {
+        const char* q = (const char*)(tb + h);  // tb[h] 的 4 个 ASCII 字节
+        if (h >= 1000) { detail::store32(p, tb[h]); return p + 4; }
+        if (h >= 100) { std::memcpy(p, q + 1, 3); return p + 3; }
+        if (h >= 10) { std::memcpy(p, q + 2, 2); return p + 2; }
+        p[0] = q[3];
+        return p + 1;
+    }
     template <class U>
     FASTIO_HOT void write_uns(U x) {
-        constexpr size_t WD = sizeof(U) > 8 ? 48 : 24;  // __int128 最长 39 位 + 符号
-        reserve(WD);
+        reserve(48);
         const uint32_t* tb = detail::quad_tbl.v;
-        char tmp[WD * 2];  // 尾部定长 WD 字节拷贝最多越 q 一格，留足一倍余量
-        char* e = tmp + WD;
-        char* q = e;
-        while (x >= 10000) {
-            q -= 4;
-            detail::store32(q, tb[unsigned(x % 10000)]);
-            x /= 10000;
-        }
-        unsigned head = unsigned(x);
-        if (head >= 1000) {
-            q -= 4;
-            detail::store32(q, tb[head]);
+        if constexpr (sizeof(U) <= 8) {
+            // 关键技巧：各四位组用独立常量除法并行算出（无 x/=10000 串行链），
+            // 再按最高非零组分支直接写入缓冲 —— 无临时窗口、无定长拷贝。
+            if constexpr (sizeof(U) <= 4) {
+                unsigned a = unsigned(x / 100000000u);
+                unsigned b = unsigned(x / 10000u % 10000u);
+                unsigned c = unsigned(x % 10000u);
+                char* p = cur_;
+                if (a) {
+                    p = put_head(p, a, tb);
+                    detail::store32(p, tb[b]); detail::store32(p + 4, tb[c]);
+                    cur_ = p + 8;
+                } else if (b) {
+                    p = put_head(p, b, tb);
+                    detail::store32(p, tb[c]);
+                    cur_ = p + 4;
+                } else {
+                    cur_ = put_head(p, c, tb);
+                }
+            } else {
+                unsigned a = unsigned(x / 10000000000000000ull);
+                unsigned b = unsigned(x / 1000000000000ull % 10000ull);
+                unsigned c = unsigned(x / 100000000ull % 10000ull);
+                unsigned d = unsigned(x / 10000ull % 10000ull);
+                unsigned e = unsigned(x % 10000ull);
+                char* p = cur_;
+                if (a) {
+                    p = put_head(p, a, tb);
+                    detail::store32(p, tb[b]); detail::store32(p + 4, tb[c]);
+                    detail::store32(p + 8, tb[d]); detail::store32(p + 12, tb[e]);
+                    cur_ = p + 16;
+                } else if (b) {
+                    p = put_head(p, b, tb);
+                    detail::store32(p, tb[c]); detail::store32(p + 4, tb[d]);
+                    detail::store32(p + 8, tb[e]);
+                    cur_ = p + 12;
+                } else if (c) {
+                    p = put_head(p, c, tb);
+                    detail::store32(p, tb[d]); detail::store32(p + 4, tb[e]);
+                    cur_ = p + 8;
+                } else if (d) {
+                    p = put_head(p, d, tb);
+                    detail::store32(p, tb[e]);
+                    cur_ = p + 4;
+                } else {
+                    cur_ = put_head(p, e, tb);
+                }
+            }
         } else {
-            uint32_t w = tb[head];
-            int skip = head >= 100 ? 1 : head >= 10 ? 2 : 3;
-            char four[4];
-            detail::store32(four, w);
-            q -= (4 - skip);
-            std::memcpy(q, four + skip, size_t(4 - skip));
+            constexpr size_t WD = 48;  // __int128 最长 39 位 + 符号
+            char tmp[WD * 2];  // 尾部定长 WD 字节拷贝最多越 q 一格，留足一倍余量
+            char* e = tmp + WD;
+            char* q = e;
+            while (x >= 10000) {
+                q -= 4;
+                detail::store32(q, tb[unsigned(x % 10000)]);
+                x /= 10000;
+            }
+            unsigned head = unsigned(x);
+            if (head >= 1000) {
+                q -= 4;
+                detail::store32(q, tb[head]);
+            } else {
+                uint32_t w = tb[head];
+                int skip = head >= 100 ? 1 : head >= 10 ? 2 : 3;
+                char four[4];
+                detail::store32(four, w);
+                q -= (4 - skip);
+                std::memcpy(q, four + skip, size_t(4 - skip));
+            }
+            size_t len = size_t(e - q);
+            std::memcpy(cur_, q, WD);  // 定长拷贝，比变长快；已 reserve
+            cur_ += len;
         }
-        size_t len = size_t(e - q);
-        std::memcpy(cur_, q, WD);  // 定长拷贝，比变长快；已 reserve
-        cur_ += len;
     }
 
     template <class T>

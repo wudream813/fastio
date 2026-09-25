@@ -29,7 +29,7 @@ benchmark: src/benchmark.cpp include/fastio.hpp
 
 # --- 减分支/激进选项：同一源文件用不同 -D 组合各编译一遍 ---------------------
 OPT_COMBOS := options_test opt_no_eof opt_unsigned opt_steps opt_cincout opt_combo \
-              opt_inmax opt_outmax opt_iomax
+              opt_inmax opt_outmax opt_iomax opt_nows opt_nows_u opt_nows_c
 
 options_test: src/options_test.cpp $(HDRS)
 	$(CXX) $(CXXFLAGS) -o $@ $<
@@ -49,6 +49,12 @@ opt_outmax: src/options_test.cpp $(HDRS)
 	$(CXX) $(CXXFLAGS) -DFASTIO_OUTPUT_MAX=2097152 -o $@ $<
 opt_iomax: src/options_test.cpp $(HDRS)
 	$(CXX) $(CXXFLAGS) -DFASTIO_INPUT_MAX=4194304 -DFASTIO_OUTPUT_MAX=2097152 -DFASTIO_NO_EOF_CHECK -o $@ $<
+opt_nows: src/options_test.cpp $(HDRS)
+	$(CXX) $(CXXFLAGS) -DFASTIO_NO_WS_SKIP -o $@ $<
+opt_nows_u: src/options_test.cpp $(HDRS)
+	$(CXX) $(CXXFLAGS) -DFASTIO_NO_WS_SKIP -DFASTIO_ASSUME_UNSIGNED -o $@ $<
+opt_nows_c: src/options_test.cpp $(HDRS)
+	$(CXX) $(CXXFLAGS) -DFASTIO_NO_WS_SKIP -DFASTIO_NO_EOF_CHECK -DFASTIO_PAIR_STEPS_INT=3 -DFASTIO_PAIR_STEPS_LL=4 -o $@ $<
 
 # 选项收益对照（100MiB，同一数据两个二进制先后跑）
 options_bench: src/options_bench.cpp $(HDRS)
@@ -74,6 +80,9 @@ test-options: $(OPT_COMBOS)
 	./opt_inmax < /dev/null
 	./opt_outmax < /dev/null
 	./opt_iomax < /dev/null
+	./opt_nows < /dev/null
+	./opt_nows_u < /dev/null
+	./opt_nows_c < /dev/null
 
 # 库 vs cin/cout，默认 100MiB
 benchlib: bench_lib
