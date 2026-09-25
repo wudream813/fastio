@@ -158,7 +158,7 @@ int n = fio_ultra::in.read<int>();     fio_ultra::in.read_n(a, n);
 
 | 宏 | 你的承诺 | 被删掉的分支 | 作用于 |
 |---|---|---|---|
-| `FASTIO_NO_EOF_CHECK` | 数据完整规范、热路径读不到 EOF | `getch/peek/read` 的边界判断、流式 refill | 主库、fread、streambuf、getchar(±unlocked) |
+| `FASTIO_NO_EOF_CHECK` | 数据完整规范、热路径读不到流末尾 | `getch/peek/read<char>` 的边界判断、`c != EOF` 比较（流式 refill **永远保留**，管道也安全） | 主库、fread、streambuf、getchar(±unlocked) |
 | `FASTIO_ASSUME_UNSIGNED` | 输入没有负号（也没有 `+`） | 读侧符号判断、写侧 `x < 0` 判断 | **全部**手写解析层 |
 | `FASTIO_PAIR_STEPS_INT=n` | ≤32 位整型最多 `2n+1` 位十进制 | 多余的双字节查表展开 | 主库、mmap、ultra |
 | `FASTIO_PAIR_STEPS_LL=n` | 64 位整型最多 `2n+1` 位十进制 | 同上 | 同上 |

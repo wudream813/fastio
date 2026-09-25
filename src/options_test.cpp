@@ -342,6 +342,18 @@ int main() {
     { fio_gcu::Reader r;         assert(r.open(IN));    check_reader(r, g, "4 getchar_unlocked"); }
     { fastio::Reader r;          assert(r.open(IN));    check_reader(r, g, "★ 主库 fastio.hpp"); }
 
+#ifdef FASTIO_NO_EOF_CHECK
+    {   // 回归：NO_EOF_CHECK 下管道（流式）也必须读对 —— refill 属于窗口正确性，不删
+        char cmd[128];
+        std::snprintf(cmd, sizeof cmd, "cat %s", IN);
+        FILE* pp = popen(cmd, "r");
+        assert(pp);
+        fastio::Reader r(pp);
+        check_reader(r, g, "★ 主库 NO_EOF/管道");
+        pclose(pp);
+    }
+#endif
+
 #ifdef FASTIO_INPUT_MAX
     {   // 激进模式：管道也被一次性整读（直到 EOF）
         char cmd[128];

@@ -31,8 +31,11 @@
 //      FASTIO_IBUF_BITS    流式输入缓冲位数，默认 20（1 MiB）
 //
 //  减分支选项（#define 之后再 #include；「你保证」成立才开，否则结果错误）：
-//      FASTIO_NO_EOF_CHECK     忽略 EOF：getch/peek/read 不再判边界，流式下不再
-//                              refill —— 数据必须完整规范（mmap/整读文件才安全）
+//      FASTIO_NO_EOF_CHECK     忽略 EOF：getch/peek/read<char> 不再判边界，
+//                              fread/streambuf/getchar 档的 `c != EOF` 比较消失。
+//                              流式缓冲的 refill 永远保留（那是窗口正确性不是
+//                              EOF 检查），所以管道喂数照样安全——只要你保证
+//                              数据规范、读不到流末尾。
 //      FASTIO_ASSUME_UNSIGNED  保证输入没有负号：读、写两侧的符号分支整体消失
 //      FASTIO_PAIR_STEPS_INT   覆盖 ≤32 位整型的双字节步数（默认 int/uint 精确 5）
 //      FASTIO_PAIR_STEPS_LL    覆盖 64 位（默认 signed 9 = 19 位 / unsigned 10 = 20 位）
@@ -375,9 +378,10 @@ public:
 
     template <class T>
     FASTIO_HOT typename std::enable_if<detail::is_int<T>::value, T>::type read() {
-#ifndef FASTIO_NO_EOF_CHECK
+        // 流式（管道/终端）必须 refill 保证窗口有数据 —— 这是缓冲正确性，
+        // 不是 EOF 检查，FASTIO_NO_EOF_CHECK 也不跳。mmap/整读下 stream_ 恒 false，
+        // 这条分支被完美预测，开销可忽略。
         if (FASTIO_UNLIKELY(stream_)) { skip_ws(); ensure(48); }
-#endif
         const char* q = p_;
         T v = parse_int<T>(q);
         p_ = q;
