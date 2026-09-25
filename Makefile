@@ -103,5 +103,4 @@ bench: benchmark
 
 clean:
 	rm -f example demo correctness benchmark bench_lib variants_test variants_bench \
-	      options_test opt_no_eof opt_unsigned opt_steps opt_cincout opt_combo \
-	      options_bench options_bench_fast
+	      $(OPT_COMBOS) options_bench options_bench_fast
