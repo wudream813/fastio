@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build & test（9 组编译期选项组合 + 全部写法自检）
+      - name: Build & test（12 组编译期选项组合 + 全部写法自检）
         run: |
           g++ --version
           make -s test

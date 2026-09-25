@@ -1,6 +1,10 @@
 #pragma once
+#define FASTIO_VERSION "1.2.0"
 // ============================================================================
 //  fastio.hpp  —  超级快读快写（单头文件，开箱即用）
+//  v1.2.0：热链全强制内联（read/read_n/write/write_uns）· 输出缓冲改模块级
+//          定长数组 + 下标游标（寄存器常驻，对齐 mmap 模板存储形态）·
+//          写四位组 SSE 单条 16B 写（FASTIO_NO_WRITE_SSE 可关）· 新增 write_nl
 //
 //  读：mmap 整文件映射 + 双字节打表        （100MiB 实测 ~70 ms，约 8× cin）
 //  写：fwrite 大缓冲   + 四位打表          （100MiB 实测 ~155 ms，约 3× cout）
@@ -62,6 +66,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#if !defined(FASTIO_NO_WRITE_SSE) && (defined(__x86_64__) || defined(__SSE2__))
+  #include <emmintrin.h>
+  #define FASTIO_WRITE_SSE 1
+#endif
 #include <limits>
 #include <string>
 #include <type_traits>
@@ -160,6 +168,24 @@ FASTIO_ALWAYS uint16_t load16(const char* p) {
     return w;
 }
 FASTIO_ALWAYS void store32(char* p, uint32_t w) { std::memcpy(p, &w, 4); }
+// 单条 8B 写（GPR 拼字，编译器必出一条 mov）
+FASTIO_ALWAYS void store64(char* p, uint32_t lo, uint32_t hi) {
+    uint64_t w = uint64_t(lo) | (uint64_t(hi) << 32);
+    std::memcpy(p, &w, 8);
+}
+// 单条 16B 写：四条 4B 表值拼进 xmm 一次 movups 落地。
+// 为什么不靠编译器的 store-merging？—— 同样的源码形态在普通全局函数里
+// GCC 会把四条 store32 合成一条 movups（快 ~10%），但从类成员函数内联
+// 出来后合并神秘不触发。用 intrinsic 自己动手，勿再赌编译器心情。
+FASTIO_ALWAYS void store128(char* p, uint32_t w0, uint32_t w1, uint32_t w2, uint32_t w3) {
+#ifdef FASTIO_WRITE_SSE
+    __m128i m = _mm_setr_epi32(int(w0), int(w1), int(w2), int(w3));
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(p), m);
+#else
+    store64(p, w0, w1);
+    store64(p + 8, w2, w3);
+#endif
+}
 
 template <class T>
 struct is_int : std::integral_constant<bool, std::is_integral<T>::value &&
@@ -405,7 +431,9 @@ public:
     }
 
     template <class T>
-    FASTIO_HOT typename std::enable_if<detail::is_int<T>::value, T>::type read() {
+    // 必须强制内联：函数体大，GCC 默认会把它留成真实 call —— 每次读一个数
+    // 就有一次 call/ret + 调用点状态 spill/reload，热点循环里实测慢 ~20%。
+    FASTIO_HOT FASTIO_ALWAYS typename std::enable_if<detail::is_int<T>::value, T>::type read() {
         // 流式（管道/终端）必须 refill 保证窗口有数据 —— 这是缓冲正确性，
         // 不是 EOF 检查，FASTIO_NO_EOF_CHECK 也不跳。mmap/整读下 stream_ 恒 false，
         // 这条分支被完美预测，开销可忽略。
@@ -491,7 +519,7 @@ public:
 
     // 批量读数组：整型在缓冲模式下走「游标常驻寄存器」的最快路径
     template <class T>
-    Reader& read_n(T* a, size_t n) {
+    FASTIO_ALWAYS Reader& read_n(T* a, size_t n) {
         if constexpr (detail::is_int<T>::value) {
             if (FASTIO_LIKELY(!stream_)) {
                 const char* q = p_;
@@ -667,25 +695,40 @@ private:
 //                                 Writer
 //   fwrite 大缓冲 + 四位打表（一次落 4 个字符）
 // ==========================================================================
+namespace detail {
+// ==========================================================================
+//   输出缓冲 —— 模块级定长数组 + 模块级游标（★ 性能关键，勿挪进类！）
+//   若做成 Writer 的指针成员，热点循环里的 char 写在 C++ 意义上「可能别名」
+//   游标本身，GCC 每写一个数都得重新加载/写回 cur_ —— 实测慢 8%~25%，
+//   这正是 mmap 模板（全局数组+全局下标）能快出来的根因。
+//   定长数组地址编译期已知、与游标分属不同存储，GCC 全程把游标钉在寄存器。
+// ==========================================================================
+#ifdef FASTIO_OUTPUT_MAX
+inline constexpr size_t OBUF_N = size_t(FASTIO_OUTPUT_MAX);
+#else
+inline constexpr size_t OBUF_N = size_t(1) << FASTIO_OBUF_BITS;
+#endif
+alignas(64) inline char obuf[OBUF_N + 64];  // +64：写整数定长 24/48B 拷贝的尾巴
+// ★ 用下标而不是指针：store 的基址因此恒为常量 &obuf，GCC 能证明
+//   「写进 obuf 的字节不可能改动 obuf_off 本体」，于是整个热点循环里
+//   下标常驻寄存器（mmap 模板同款形态）。指针形态会丢这个证明。
+inline unsigned obuf_off = 0;
+}  // namespace detail
+
 class Writer {
 public:
 #ifdef FASTIO_OUTPUT_MAX
     // 用户承诺总输出 ≤ FASTIO_OUTPUT_MAX 字节：一次配足，整程只 fwrite 一次。
     // ⚠ 超出承诺 = 堆损坏（stdlib 不拦）。+64 是写整数时定长 24/48 字节拷贝的尾巴。
-    static constexpr size_t OBUF = size_t(FASTIO_OUTPUT_MAX);
+    static constexpr size_t OBUF = detail::OBUF_N;
 #else
-    static constexpr size_t OBUF = size_t(1) << FASTIO_OBUF_BITS;
+    static constexpr size_t OBUF = detail::OBUF_N;
 #endif
 
-    Writer() : fout_(stdout) {
-        buf_ = static_cast<char*>(std::malloc(OBUF + 64));
-        cur_ = buf_;
-    }
-    explicit Writer(FILE* fp) : Writer() { fout_ = fp ? fp : stdout; }
+    Writer() : fout_(stdout) {}
+    explicit Writer(FILE* fp) : fout_(fp ? fp : stdout) {}
     ~Writer() {
         spill();
-        std::free(buf_);
-        buf_ = nullptr;
         if (owns_file_) std::fclose(owns_file_);
     }
     Writer(const Writer&) = delete;
@@ -711,35 +754,35 @@ public:
     }
     // 内部：缓冲满时倒进 stdio，不强制 fflush
     FASTIO_ALWAYS void spill() {
-        if (cur_ != buf_) {
-            std::fwrite(buf_, 1, size_t(cur_ - buf_), fout_);
-            cur_ = buf_;
+        if (detail::obuf_off) {
+            std::fwrite(detail::obuf, 1, detail::obuf_off, fout_);
+            detail::obuf_off = 0;
         }
     }
 
     // 无边界检查的 put：仅当前一次 write/reserve 已留足余量（写整数已 reserve(48)）
     // 或你自行确认缓冲未满时使用。竞赛配方：write(x) 后接 put_nochk('\n') 安全。
-    FASTIO_ALWAYS void put_nochk(char c) { *cur_++ = c; }
+    FASTIO_ALWAYS void put_nochk(char c) { detail::obuf[detail::obuf_off++] = c; }
     FASTIO_ALWAYS void put(char c) {
 #ifndef FASTIO_OUTPUT_MAX
-        if (FASTIO_UNLIKELY(cur_ == buf_ + OBUF)) spill();
+        if (FASTIO_UNLIKELY(detail::obuf_off == OBUF)) spill();
 #endif
-        *cur_++ = c;
+        detail::obuf[detail::obuf_off++] = c;
     }
-    void put_raw(const char* s, size_t n) {
+    FASTIO_ALWAYS void put_raw(const char* s, size_t n) {
 #ifdef FASTIO_OUTPUT_MAX
         // 承诺总量 ≤ MAX：单次必 ≤ MAX，边界判断全删
-        std::memcpy(cur_, s, n);
-        cur_ += n;
+        std::memcpy(detail::obuf + detail::obuf_off, s, n);
+        detail::obuf_off += unsigned(n);
 #else
         if (FASTIO_UNLIKELY(n >= OBUF)) {
             spill();
             std::fwrite(s, 1, n, fout_);
             return;
         }
-        if (FASTIO_UNLIKELY(size_t(buf_ + OBUF - cur_) < n)) spill();
-        std::memcpy(cur_, s, n);
-        cur_ += n;
+        if (FASTIO_UNLIKELY(OBUF - detail::obuf_off < n)) spill();
+        std::memcpy(detail::obuf + detail::obuf_off, s, n);
+        detail::obuf_off += unsigned(n);
 #endif
     }
 
@@ -754,7 +797,8 @@ public:
         return p + 1;
     }
     template <class U>
-    FASTIO_HOT void write_uns(U x) {
+    // 必须强制内联：同上 —— 不内联时 1.2M 次数的写循环慢 ~25%（16.8ms vs 13.4ms）。
+    FASTIO_HOT FASTIO_ALWAYS void write_uns(U x) {
         reserve(48);
         const uint32_t* tb = detail::quad_tbl.v;
         if constexpr (sizeof(U) <= 8) {
@@ -764,17 +808,17 @@ public:
                 unsigned a = unsigned(x / 100000000u);
                 unsigned b = unsigned(x / 10000u % 10000u);
                 unsigned c = unsigned(x % 10000u);
-                char* p = cur_;
+                char* p = detail::obuf + detail::obuf_off;
                 if (a) {
                     p = put_head(p, a, tb);
-                    detail::store32(p, tb[b]); detail::store32(p + 4, tb[c]);
-                    cur_ = p + 8;
+                    detail::store64(p, tb[b], tb[c]);
+                    detail::obuf_off = unsigned(p - detail::obuf) + 8;
                 } else if (b) {
                     p = put_head(p, b, tb);
                     detail::store32(p, tb[c]);
-                    cur_ = p + 4;
+                    detail::obuf_off = unsigned(p - detail::obuf) + 4;
                 } else {
-                    cur_ = put_head(p, c, tb);
+                    detail::obuf_off = unsigned(put_head(p, c, tb) - detail::obuf);
                 }
             } else {
                 // 各组独立常量除法（两连除但链短、互不依赖；逐级取余形式看似省 uop，
@@ -784,27 +828,26 @@ public:
                 unsigned c = unsigned(x / 100000000ull % 10000ull);
                 unsigned d = unsigned(x / 10000ull % 10000ull);
                 unsigned e = unsigned(x % 10000ull);
-                char* p = cur_;
+                char* p = detail::obuf + detail::obuf_off;
                 if (a) {
                     p = put_head(p, a, tb);
-                    detail::store32(p, tb[b]); detail::store32(p + 4, tb[c]);
-                    detail::store32(p + 8, tb[d]); detail::store32(p + 12, tb[e]);
-                    cur_ = p + 16;
+                    detail::store128(p, tb[b], tb[c], tb[d], tb[e]);
+                    detail::obuf_off = unsigned(p - detail::obuf) + 16;
                 } else if (b) {
                     p = put_head(p, b, tb);
-                    detail::store32(p, tb[c]); detail::store32(p + 4, tb[d]);
+                    detail::store64(p, tb[c], tb[d]);
                     detail::store32(p + 8, tb[e]);
-                    cur_ = p + 12;
+                    detail::obuf_off = unsigned(p - detail::obuf) + 12;
                 } else if (c) {
                     p = put_head(p, c, tb);
-                    detail::store32(p, tb[d]); detail::store32(p + 4, tb[e]);
-                    cur_ = p + 8;
+                    detail::store64(p, tb[d], tb[e]);
+                    detail::obuf_off = unsigned(p - detail::obuf) + 8;
                 } else if (d) {
                     p = put_head(p, d, tb);
                     detail::store32(p, tb[e]);
-                    cur_ = p + 4;
+                    detail::obuf_off = unsigned(p - detail::obuf) + 4;
                 } else {
-                    cur_ = put_head(p, e, tb);
+                    detail::obuf_off = unsigned(put_head(p, e, tb) - detail::obuf);
                 }
             }
         } else {
@@ -830,13 +873,13 @@ public:
                 std::memcpy(q, four + skip, size_t(4 - skip));
             }
             size_t len = size_t(e - q);
-            std::memcpy(cur_, q, WD);  // 定长拷贝，比变长快；已 reserve
-            cur_ += len;
+            std::memcpy(detail::obuf + detail::obuf_off, q, WD);  // 定长拷贝，比变长快；已 reserve
+            detail::obuf_off += unsigned(len);
         }
     }
 
     template <class T>
-    typename std::enable_if<detail::is_int<T>::value, void>::type write(T x) {
+    FASTIO_ALWAYS typename std::enable_if<detail::is_int<T>::value, void>::type write(T x) {
         using U = detail::uns_t<T>;
 #ifdef FASTIO_ASSUME_UNSIGNED
         write_uns(U(x));  // 用户保证没有负数：符号分支编译期消失
@@ -860,8 +903,8 @@ public:
     template <class T>
     typename std::enable_if<detail::is_flt<T>::value, void>::type write(T x) {
         reserve(400);
-        int k = std::snprintf(cur_, 400, "%.*f", precision_, double(x));
-        if (k > 0) cur_ += k;
+        int k = std::snprintf(detail::obuf + detail::obuf_off, 400, "%.*f", precision_, double(x));
+        if (k > 0) detail::obuf_off += unsigned(k);
     }
     void set_precision(int p) { precision_ = p; }
 
@@ -870,6 +913,11 @@ public:
 
     template <class T>
     void writeln(const T& x) { write(x); put('\n'); }
+
+    // 冲榜专用：write + 免检查换行一次调用。安全性同 put_nochk ——
+    // 紧接的整数 write 已 reserve(48)，换行必在缓冲内。
+    template <class T>
+    FASTIO_ALWAYS void write_nl(const T& x) { write(x); put_nochk('\n'); }
 
     template <class... Args>
     void print(const Args&... args) {
@@ -885,7 +933,7 @@ public:
         println(rest...);
     }
     template <class T>
-    void write_n(const T* a, size_t n, char sep = ' ', char last = '\n') {
+    FASTIO_ALWAYS void write_n(const T* a, size_t n, char sep = ' ', char last = '\n') {
         for (size_t i = 0; i < n; ++i) {
             write(a[i]);
             put(i + 1 == n ? last : sep);
@@ -897,13 +945,11 @@ private:
 #ifdef FASTIO_OUTPUT_MAX
         (void)n;   // 承诺总量 ≤ MAX：永不 spill
 #else
-        if (FASTIO_UNLIKELY(size_t(buf_ + OBUF - cur_) < n)) spill();
+        if (FASTIO_UNLIKELY(OBUF - detail::obuf_off < n)) spill();
 #endif
     }
     FILE* fout_ = nullptr;
     FILE* owns_file_ = nullptr;
-    char* buf_ = nullptr;
-    char* cur_ = nullptr;
     int precision_ = 6;
 };
 
